@@ -129,6 +129,58 @@ class MLAgent:
             return {"operations": [], "total_operations": 0}
         return self.preprocessor.get_summary()
 
+    def save_preprocessed_db(
+        self,
+        output_path: str,
+        table_name: Optional[str] = None,
+        include_original_tables: bool = False,
+    ) -> str:
+        """
+        Save the preprocessed dataset as a new SQL database, leaving the original untouched.
+
+        Args:
+            output_path: Path for the new database file (e.g., "preprocessed.db").
+            table_name: Name for the table in the new database.
+                Defaults to the original table name or "preprocessed_data".
+            include_original_tables: If True, also copy all original tables from the
+                source database into the new database alongside the preprocessed data.
+
+        Returns:
+            Path to the created database file.
+        """
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
+
+        # Determine table name
+        if table_name is None:
+            table_name = self.current_table or "preprocessed_data"
+            # Clean up query-based table names
+            if table_name.startswith("query:"):
+                table_name = "preprocessed_data"
+
+        # Normalize output path to SQLite
+        if not output_path.endswith((".db", ".sqlite", ".sqlite3")):
+            output_path = f"{output_path}.db"
+
+        import sqlite3
+
+        conn = sqlite3.connect(output_path)
+        try:
+            # Write the preprocessed dataset
+            self.current_df.to_sql(table_name, conn, index=False, if_exists="replace")
+
+            # Optionally copy original tables
+            if include_original_tables and self.db.engine is not None:
+                for orig_table in self.db.get_tables():
+                    if orig_table == table_name:
+                        continue
+                    orig_df = self.db.load_table(orig_table)
+                    orig_df.to_sql(orig_table, conn, index=False, if_exists="replace")
+        finally:
+            conn.close()
+
+        return output_path
+
     # ========== Analysis Operations ==========
 
     def analyze(self, target_column: Optional[str] = None, analysis_type: str = "summary") -> Dict[str, Any]:

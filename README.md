@@ -181,9 +181,23 @@ python main.py -db sample_company.db -t employees --create-bins age 5 -y salary
 
 # View preprocessing summary
 python main.py -db sample_company.db -t employees --drop-columns "name" --scale standard --encode label --preprocess-summary -y salary
+
+# Save the preprocessed dataset as a new database (original is untouched)
+python main.py -db sample_company.db -t employees --drop-columns "name" --scale standard --encode label \
+    --save-preprocessed-db preprocessed.db
+
+# Save with a custom table name
+python main.py -db sample_company.db -t employees --drop-columns "name" \
+    --save-preprocessed-db preprocessed.db --preprocessed-table cleaned_employees
+
+# Also copy all original tables into the new database
+python main.py -db sample_company.db -t employees --drop-columns "name" \
+    --save-preprocessed-db preprocessed.db --include-original-tables
 ```
 
 All preprocessing operations can be chained together and are applied in order. Feature engineering operations (like `--create-ratio`) are automatically applied to prediction data as well.
+
+The `--save-preprocessed-db` flag writes the preprocessed dataset to a brand new SQLite database file, leaving the original database completely untouched. Use `--include-original-tables` to also copy all original tables alongside the preprocessed data.
 
 ## Connecting to Different Databases
 
@@ -272,6 +286,9 @@ The agent automatically evaluates these models and selects the best one:
 | `--create-difference` | Create difference feature: `--create-difference col1 col2 new_col` |
 | `--create-bins` | Bin a column: `--create-bins column 5` |
 | `--preprocess-summary` | Show summary of preprocessing operations |
+| `--save-preprocessed-db` | Save preprocessed dataset as a new SQL database (original untouched) |
+| `--preprocessed-table` | Table name for the saved preprocessed database |
+| `--include-original-tables` | Also copy all original tables into the saved database |
 | `--list-tables` | List all tables in the database |
 | `--overview` | Show comprehensive database overview |
 | `--analyze` | Analysis type: `summary`, `correlations`, `insights`, `target` |
@@ -300,6 +317,7 @@ The agent automatically evaluates these models and selects the best one:
 | `preprocess(df)` | Get a DataPreprocessor for the dataset |
 | `apply_preprocessing(ops)` | Apply preprocessing operations to the dataset |
 | `get_preprocessing_summary()` | Get summary of preprocessing operations |
+| `save_preprocessed_db(path, table_name, include_original_tables)` | Save preprocessed dataset as a new SQL database |
 | `analyze(target, type)` | Perform data analysis |
 | `train(target, task_type)` | Train the best model |
 | `predict(data)` | Make predictions on new data |

@@ -201,6 +201,22 @@ Examples:
         action="store_true",
         help="Show a summary of preprocessing operations applied",
     )
+    parser.add_argument(
+        "--save-preprocessed-db",
+        metavar="PATH",
+        default=None,
+        help="Save the preprocessed dataset as a new SQL database (original is untouched)",
+    )
+    parser.add_argument(
+        "--preprocessed-table",
+        default=None,
+        help="Table name to use in the saved preprocessed database (default: original table name)",
+    )
+    parser.add_argument(
+        "--include-original-tables",
+        action="store_true",
+        help="Also copy all original tables into the saved preprocessed database",
+    )
 
     # Actions
     parser.add_argument(
@@ -598,6 +614,33 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                     print("=" * 60)
         elif args.preprocess_summary:
             print("No preprocessing operations were specified.")
+
+        # ========== Save preprocessed database ==========
+        if args.save_preprocessed_db:
+            saved_path = agent.save_preprocessed_db(
+                output_path=args.save_preprocessed_db,
+                table_name=args.preprocessed_table,
+                include_original_tables=args.include_original_tables,
+            )
+            if args.json:
+                _print_json({
+                    "saved_path": saved_path,
+                    "table_name": args.preprocessed_table or agent.current_table or "preprocessed_data",
+                    "rows": len(agent.current_df),
+                    "columns": len(agent.current_df.columns),
+                    "include_original_tables": args.include_original_tables,
+                })
+            else:
+                print("=" * 60)
+                print("PREPROCESSED DATABASE SAVED")
+                print("=" * 60)
+                print(f"Saved to: {saved_path}")
+                print(f"Table: {args.preprocessed_table or agent.current_table or 'preprocessed_data'}")
+                print(f"Shape: {len(agent.current_df)} rows x {len(agent.current_df.columns)} cols")
+                if args.include_original_tables:
+                    print("Original tables copied: Yes")
+                print("Original database was NOT modified.")
+                print("=" * 60)
 
         # ========== Analysis ==========
         if args.analyze:
