@@ -8,10 +8,11 @@ from .database import DatabaseProcessor
 from .model_selector import ModelSelector
 from .predictor import Predictor
 from .analyzer import DataAnalyzer
+from .preprocessor import DataPreprocessor
 from .cli import build_parser, run_cli, main
 
 __version__ = "1.0.0"
 __all__ = [
     "MLAgent", "DatabaseProcessor", "ModelSelector", "Predictor", "DataAnalyzer",
-    "build_parser", "run_cli", "main",
+    "DataPreprocessor", "build_parser", "run_cli", "main",
 ]

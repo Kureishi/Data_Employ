@@ -6,6 +6,7 @@ from .database import DatabaseProcessor
 from .model_selector import ModelSelector
 from .predictor import Predictor
 from .analyzer import DataAnalyzer
+from .preprocessor import DataPreprocessor
 
 
 class MLAgent:
@@ -45,6 +46,7 @@ class MLAgent:
         self.model_selector: Optional[ModelSelector] = None
         self.predictor: Optional[Predictor] = None
         self.analyzer: Optional[DataAnalyzer] = None
+        self.preprocessor: Optional[DataPreprocessor] = None
         self.target_column: Optional[str] = None
 
     # ========== Database Operations ==========
@@ -76,6 +78,56 @@ class MLAgent:
         self.current_df = self.db.execute_query(query)
         self.current_table = f"query: {query[:50]}..."
         return self.current_df
+
+    # ========== Preprocessing Operations ==========
+
+    def preprocess(self, df: Optional[pd.DataFrame] = None) -> DataPreprocessor:
+        """
+        Get a preprocessor for the current dataset.
+
+        Args:
+            df: Optional DataFrame to preprocess (default: current dataset).
+
+        Returns:
+            DataPreprocessor instance.
+        """
+        data = df if df is not None else self.current_df
+        if data is None:
+            raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
+        self.preprocessor = DataPreprocessor(data)
+        return self.preprocessor
+
+    def apply_preprocessing(self, operations: List[Dict[str, Any]]) -> pd.DataFrame:
+        """
+        Apply a list of preprocessing operations to the current dataset.
+
+        Args:
+            operations: List of dicts with 'op' and parameters.
+                Example: [{"op": "dropna"}, {"op": "fillna", "method": "median"}]
+
+        Returns:
+            Preprocessed DataFrame.
+        """
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
+
+        pre = self.preprocess(self.current_df)
+        for op in operations:
+            op_copy = dict(op)
+            op_name = op_copy.pop("op")
+            method = getattr(pre, op_name, None)
+            if method is None:
+                raise ValueError(f"Unknown preprocessing operation: {op_name}")
+            method(**op_copy)
+
+        self.current_df = pre.get_data()
+        return self.current_df
+
+    def get_preprocessing_summary(self) -> Dict[str, Any]:
+        """Get a summary of preprocessing operations performed."""
+        if self.preprocessor is None:
+            return {"operations": [], "total_operations": 0}
+        return self.preprocessor.get_summary()
 
     # ========== Analysis Operations ==========
 

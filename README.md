@@ -17,6 +17,7 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **Prediction Engine**: Make predictions on new data (single records or batches)
 - **Model Persistence**: Save and load trained models
 - **Feature Importance**: Identifies which features most influence predictions
+- **Data Preprocessing**: Drop/fill missing values, filter rows, scale features, encode categories, and create new features
 
 ## Installation
 
@@ -138,6 +139,52 @@ agent.load_model("my_model.joblib")
 agent.close()
 ```
 
+## Preprocessing
+
+The CLI supports common data preprocessing operations applied before model training:
+
+```bash
+# Drop rows with missing values
+python main.py -db sample_company.db -t employees --dropna -y salary
+
+# Fill missing values
+python main.py -db sample_company.db -t employees --fillna median -y salary
+python main.py -db sample_company.db -t employees --fillna constant --fillna-value 0 -y salary
+
+# Drop or keep columns
+python main.py -db sample_company.db -t employees --drop-columns "name,emp_id" -y salary
+python main.py -db sample_company.db -t employees --keep-columns "age,salary,education_level" -y salary
+
+# Remove duplicates
+python main.py -db sample_company.db -t employees --drop-duplicates -y salary
+
+# Filter rows with a query expression
+python main.py -db sample_company.db -t employees --filter "salary > 50000" -y salary
+
+# Scale numeric features (target is excluded automatically)
+python main.py -db sample_company.db -t employees --scale standard -y salary
+python main.py -db sample_company.db -t employees --scale minmax -y salary
+
+# Encode categorical columns
+python main.py -db sample_company.db -t employees --encode label -y salary
+python main.py -db sample_company.db -t employees --encode onehot -y salary
+
+# Sample or limit rows
+python main.py -db sample_company.db -t employees --sample 100 -y salary
+python main.py -db sample_company.db -t employees --head 50 -y salary
+
+# Feature engineering
+python main.py -db sample_company.db -t employees --create-ratio salary years_experience salary_per_year -y salary
+python main.py -db sample_company.db -t employees --create-product age years_experience experience_score -y salary
+python main.py -db sample_company.db -t employees --create-difference performance_score satisfaction_score gap -y salary
+python main.py -db sample_company.db -t employees --create-bins age 5 -y salary
+
+# View preprocessing summary
+python main.py -db sample_company.db -t employees --drop-columns "name" --scale standard --encode label --preprocess-summary -y salary
+```
+
+All preprocessing operations can be chained together and are applied in order. Feature engineering operations (like `--create-ratio`) are automatically applied to prediction data as well.
+
 ## Connecting to Different Databases
 
 ```python
@@ -209,6 +256,22 @@ The agent automatically evaluates these models and selects the best one:
 | `--test-size` | Fraction of data for test set (default: 0.2) |
 | `--cv-folds` | Number of cross-validation folds (default: 5) |
 | `--random-state` | Random seed (default: 42) |
+| `--dropna` | Drop rows with missing values |
+| `--fillna` | Fill missing values: `mean`, `median`, `mode`, `zero`, `constant`, `ffill`, `bfill` |
+| `--fillna-value` | Value to use with `--fillna constant` |
+| `--drop-columns` | Comma-separated columns to drop |
+| `--keep-columns` | Comma-separated columns to keep (drops all others) |
+| `--drop-duplicates` | Drop duplicate rows |
+| `--filter` | Filter rows using pandas query expression |
+| `--scale` | Scale numeric columns: `standard` (z-score) or `minmax` |
+| `--encode` | Encode categorical columns: `label` or `onehot` |
+| `--sample` | Randomly sample N rows |
+| `--head` | Keep only the first N rows |
+| `--create-ratio` | Create ratio feature: `--create-ratio col1 col2 new_col` |
+| `--create-product` | Create product feature: `--create-product col1 col2 new_col` |
+| `--create-difference` | Create difference feature: `--create-difference col1 col2 new_col` |
+| `--create-bins` | Bin a column: `--create-bins column 5` |
+| `--preprocess-summary` | Show summary of preprocessing operations |
 | `--list-tables` | List all tables in the database |
 | `--overview` | Show comprehensive database overview |
 | `--analyze` | Analysis type: `summary`, `correlations`, `insights`, `target` |
@@ -234,6 +297,9 @@ The agent automatically evaluates these models and selects the best one:
 | `load_table(table, limit)` | Load a table into memory |
 | `execute_query(query)` | Execute a custom SQL query |
 | `load_query_as_data(query)` | Load query results as working dataset |
+| `preprocess(df)` | Get a DataPreprocessor for the dataset |
+| `apply_preprocessing(ops)` | Apply preprocessing operations to the dataset |
+| `get_preprocessing_summary()` | Get summary of preprocessing operations |
 | `analyze(target, type)` | Perform data analysis |
 | `train(target, task_type)` | Train the best model |
 | `predict(data)` | Make predictions on new data |
@@ -260,6 +326,7 @@ The agent automatically evaluates these models and selects the best one:
 │   ├── model_selector.py    # Automatic model selection
 │   ├── predictor.py         # Prediction engine
 │   ├── analyzer.py          # Data analysis module
+│   ├── preprocessor.py      # Data preprocessing module
 │   └── cli.py               # Command-line interface
 ├── main.py                  # CLI entry point
 ├── create_sample_db.py      # Sample database generator

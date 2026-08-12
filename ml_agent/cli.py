@@ -107,6 +107,101 @@ Examples:
         help="Random seed for reproducibility (default: 42)",
     )
 
+    # Preprocessing options
+    parser.add_argument(
+        "--dropna",
+        action="store_true",
+        help="Drop rows with missing values",
+    )
+    parser.add_argument(
+        "--fillna",
+        choices=["mean", "median", "mode", "zero", "constant", "ffill", "bfill"],
+        default=None,
+        help="Fill missing values using the specified method",
+    )
+    parser.add_argument(
+        "--fillna-value",
+        default=None,
+        help="Value to use with --fillna constant",
+    )
+    parser.add_argument(
+        "--drop-columns",
+        default=None,
+        help="Comma-separated list of columns to drop",
+    )
+    parser.add_argument(
+        "--keep-columns",
+        default=None,
+        help="Comma-separated list of columns to keep (drops all others)",
+    )
+    parser.add_argument(
+        "--drop-duplicates",
+        action="store_true",
+        help="Drop duplicate rows",
+    )
+    parser.add_argument(
+        "--filter",
+        default=None,
+        help="Filter rows using a pandas query expression (e.g., 'salary > 50000')",
+    )
+    parser.add_argument(
+        "--scale",
+        choices=["standard", "minmax"],
+        default=None,
+        help="Scale numeric columns (standard=z-score, minmax=0-1)",
+    )
+    parser.add_argument(
+        "--encode",
+        choices=["label", "onehot"],
+        default=None,
+        help="Encode categorical columns (label=integers, onehot=dummy variables)",
+    )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="Randomly sample N rows from the dataset",
+    )
+    parser.add_argument(
+        "--head",
+        type=int,
+        default=None,
+        help="Keep only the first N rows",
+    )
+    parser.add_argument(
+        "--create-ratio",
+        nargs=3,
+        metavar=("NUMERATOR", "DENOMINATOR", "NEW_COLUMN"),
+        default=None,
+        help="Create a ratio feature: --create-ratio col1 col2 new_col",
+    )
+    parser.add_argument(
+        "--create-product",
+        nargs=3,
+        metavar=("COL1", "COL2", "NEW_COLUMN"),
+        default=None,
+        help="Create a product feature: --create-product col1 col2 new_col",
+    )
+    parser.add_argument(
+        "--create-difference",
+        nargs=3,
+        metavar=("COL1", "COL2", "NEW_COLUMN"),
+        default=None,
+        help="Create a difference feature: --create-difference col1 col2 new_col",
+    )
+    parser.add_argument(
+        "--create-bins",
+        nargs=2,
+        metavar=("COLUMN", "BINS"),
+        default=None,
+        help="Bin a numeric column: --create-bins column 5",
+    )
+    parser.add_argument(
+        "--preprocess-summary",
+        action="store_true",
+        help="Show a summary of preprocessing operations applied",
+    )
+
     # Actions
     parser.add_argument(
         "--list-tables",
@@ -193,6 +288,93 @@ def _print_table(headers: List[str], rows: List[List[Any]]) -> None:
     print("-+-".join("-" * w for w in widths))
     for row in str_rows:
         print(" | ".join(c.ljust(widths[i]) for i, c in enumerate(row)))
+
+
+def _build_preprocessing_ops(args) -> List[Dict[str, Any]]:
+    """Build a list of preprocessing operations from CLI args."""
+    ops: List[Dict[str, Any]] = []
+    target = args.target
+
+    # Helper: get all numeric column names from the loaded dataset context.
+    # Scale operations should exclude the target column so model predictions
+    # remain in the original units.
+    from .agent import MLAgent
+    scale_exclude = [target] if target else None
+
+    if args.dropna:
+        ops.append({"op": "dropna"})
+
+    if args.fillna:
+        fill_op = {"op": "fillna", "method": args.fillna}
+        if args.fillna == "constant":
+            if args.fillna_value is None:
+                raise ValueError("--fillna-value is required when using --fillna constant")
+            fill_op["value"] = args.fillna_value
+        ops.append(fill_op)
+
+    if args.drop_columns:
+        cols = [c.strip() for c in args.drop_columns.split(",") if c.strip()]
+        if cols:
+            ops.append({"op": "drop_columns", "columns": cols})
+
+    if args.keep_columns:
+        cols = [c.strip() for c in args.keep_columns.split(",") if c.strip()]
+        if cols:
+            ops.append({"op": "keep_columns", "columns": cols})
+
+    if args.drop_duplicates:
+        ops.append({"op": "drop_duplicates"})
+
+    if args.filter:
+        ops.append({"op": "filter_rows", "condition": args.filter})
+
+    if args.scale:
+        scale_op = {"op": "scale_numeric", "method": args.scale}
+        # We'll mark the target column to be excluded during application
+        scale_op["exclude"] = scale_exclude
+        ops.append(scale_op)
+
+    if args.encode:
+        ops.append({"op": "encode_categorical", "method": args.encode})
+
+    if args.sample:
+        ops.append({"op": "sample_rows", "n": args.sample, "random_state": 42})
+
+    if args.head:
+        ops.append({"op": "head_rows", "n": args.head})
+
+    if args.create_ratio:
+        ops.append({
+            "op": "create_ratio",
+            "numerator": args.create_ratio[0],
+            "denominator": args.create_ratio[1],
+            "new_column": args.create_ratio[2],
+        })
+
+    if args.create_product:
+        ops.append({
+            "op": "create_product",
+            "col1": args.create_product[0],
+            "col2": args.create_product[1],
+            "new_column": args.create_product[2],
+        })
+
+    if args.create_difference:
+        ops.append({
+            "op": "create_difference",
+            "col1": args.create_difference[0],
+            "col2": args.create_difference[1],
+            "new_column": args.create_difference[2],
+        })
+
+    if args.create_bins:
+        ops.append({
+            "op": "create_bins",
+            "column": args.create_bins[0],
+            "bins": int(args.create_bins[1]),
+        })
+
+    return ops
 
 
 def _load_prediction_data(predict_json: Optional[str], predict_file: Optional[str]) -> Optional[pd.DataFrame]:
@@ -375,6 +557,48 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             # No data source specified - show help
             parser.error("Either --table, --query, or --load-model is required")
 
+        # ========== Preprocessing ==========
+        preprocess_ops = _build_preprocessing_ops(args)
+        if preprocess_ops:
+            before_shape = (len(agent.current_df), len(agent.current_df.columns))
+
+            # Resolve scale operations: replace 'exclude' with explicit column list
+            for op in preprocess_ops:
+                if op.get("op") == "scale_numeric" and "exclude" in op:
+                    exclude_cols = op.pop("exclude") or []
+                    numeric_cols = [
+                        c for c in agent.current_df.columns
+                        if pd.api.types.is_numeric_dtype(agent.current_df[c].dtype)
+                        and c not in exclude_cols
+                    ]
+                    if numeric_cols:
+                        op["columns"] = numeric_cols
+
+            agent.apply_preprocessing(preprocess_ops)
+            after_shape = (len(agent.current_df), len(agent.current_df.columns))
+            if args.verbose:
+                print(f"Preprocessing applied: {len(preprocess_ops)} operation(s)")
+                print(f"  Shape: {before_shape[0]}x{before_shape[1]} -> {after_shape[0]}x{after_shape[1]}")
+            if args.preprocess_summary:
+                summary = agent.get_preprocessing_summary()
+                if args.json:
+                    _print_json(summary)
+                else:
+                    print("=" * 60)
+                    print("PREPROCESSING SUMMARY")
+                    print("=" * 60)
+                    print(f"Operations applied: {summary['total_operations']}")
+                    for op in summary["operations"]:
+                        op_name = op.get("operation", "unknown")
+                        details = ", ".join(
+                            f"{k}={v}" for k, v in op.items() if k != "operation"
+                        )
+                        print(f"  - {op_name}: {details}")
+                    print(f"Final shape: {summary['current_shape']['rows']} rows x {summary['current_shape']['columns']} cols")
+                    print("=" * 60)
+        elif args.preprocess_summary:
+            print("No preprocessing operations were specified.")
+
         # ========== Analysis ==========
         if args.analyze:
             analysis = agent.analyze(target_column=args.target, analysis_type=args.analyze)
@@ -467,9 +691,43 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                     else:
                         print(f"  {k}: {v}")
 
-            # Make predictions
+            # Make predictions (apply same feature-level preprocessing to prediction data)
             pred_df = _load_prediction_data(args.predict, args.predict_file)
             if pred_df is not None:
+                # Apply fitted transformers (scalers, label encoders) from training
+                if agent.preprocessor is not None and agent.preprocessor.fitted_transformers:
+                    pred_df = agent.preprocessor.transform(pred_df)
+
+                # Re-apply feature-engineering ops to prediction data
+                if preprocess_ops:
+                    feature_ops = [
+                        op for op in preprocess_ops
+                        if op.get("op") in ("drop_columns", "keep_columns",
+                                            "create_ratio", "create_product",
+                                            "create_difference", "create_bins")
+                    ]
+                    if feature_ops:
+                        pre = agent.preprocess(pred_df)
+                        for op in feature_ops:
+                            op_name = op.get("op")
+                            method = getattr(pre, op_name, None)
+                            if method is not None:
+                                op_params = {k: v for k, v in op.items() if k != "op"}
+                                # For drop_columns, only drop columns that exist in prediction data
+                                if op_name == "drop_columns":
+                                    existing = [c for c in op_params.get("columns", []) if c in pred_df.columns]
+                                    if not existing:
+                                        continue
+                                    op_params["columns"] = existing
+                                # For keep_columns, only keep columns that exist
+                                elif op_name == "keep_columns":
+                                    existing = [c for c in op_params.get("columns", []) if c in pred_df.columns]
+                                    if not existing:
+                                        continue
+                                    op_params["columns"] = existing
+                                method(**op_params)
+                        pred_df = pre.get_data()
+
                 predictions = agent.predict(pred_df)
                 if args.output:
                     predictions.to_csv(args.output, index=False)
