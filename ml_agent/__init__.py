@@ -9,10 +9,12 @@ from .model_selector import ModelSelector
 from .predictor import Predictor
 from .analyzer import DataAnalyzer
 from .preprocessor import DataPreprocessor
+from .llm_advisor import LLMAdvisor, LLMAdvisorError, create_llm_advisor
 from .cli import build_parser, run_cli, main
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "MLAgent", "DatabaseProcessor", "ModelSelector", "Predictor", "DataAnalyzer",
-    "DataPreprocessor", "build_parser", "run_cli", "main",
+    "DataPreprocessor", "LLMAdvisor", "LLMAdvisorError", "create_llm_advisor",
+    "build_parser", "run_cli", "main",
 ]

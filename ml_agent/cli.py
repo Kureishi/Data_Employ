@@ -52,6 +52,29 @@ Examples:
   python main.py -db sample_company.db -t employees -y salary --save-model model.joblib
   python main.py -db sample_company.db --load-model model.joblib \\
       --predict '{"age": 30, "years_experience": 5.0, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75.0, "satisfaction_score": 70.0}'
+
+  # Check LM Studio availability
+  python main.py -db sample_company.db --llm-check
+
+  # Ask a natural-language question -> SQL
+  python main.py -db sample_company.db --llm-ask "What is the average salary per department?"
+
+  # Let the LLM recommend a target column
+  python main.py -db sample_company.db -t employees --llm-suggest-target
+
+  # Let the LLM recommend preprocessing operations
+  python main.py -db sample_company.db -t employees -y salary --llm-suggest-preprocessing
+
+  # Apply the LLM-recommended preprocessing and train
+  python main.py -db sample_company.db -t employees -y salary --llm-apply-preprocessing
+
+  # Explain training results in plain language
+  python main.py -db sample_company.db -t employees -y salary --llm-explain-results
+
+  # Explain the first 3 predictions in plain language
+  python main.py -db sample_company.db -t employees -y salary \\
+      --predict '{"age": 30, "years_experience": 5.0, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75.0, "satisfaction_score": 70.0}' \\
+      --llm-explain-predictions 3
 """,
     )
 
@@ -244,6 +267,64 @@ Examples:
         "--model-info",
         action="store_true",
         help="Show information about the trained model",
+    )
+
+    # LLM advisor options
+    parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="Enable the local LLM advisor (LM Studio)",
+    )
+    parser.add_argument(
+        "--llm-url",
+        default="http://localhost:1234/v1",
+        help="LM Studio server URL (default: http://localhost:1234/v1)",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="LM Studio model name to use (default: server's loaded model)",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=int,
+        default=60,
+        help="LLM request timeout in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--llm-check",
+        action="store_true",
+        help="Check LM Studio server availability",
+    )
+    parser.add_argument(
+        "--llm-ask",
+        default=None,
+        help="Natural-language question to convert into SQL",
+    )
+    parser.add_argument(
+        "--llm-suggest-target",
+        action="store_true",
+        help="Recommend a target column using the LLM (with heuristic fallback)",
+    )
+    parser.add_argument(
+        "--llm-suggest-preprocessing",
+        action="store_true",
+        help="Recommend a preprocessing operation chain using the LLM",
+    )
+    parser.add_argument(
+        "--llm-explain-results",
+        action="store_true",
+        help="Write a plain-language interpretation of training results",
+    )
+    parser.add_argument(
+        "--llm-explain-predictions",
+        default=None,
+        help="Explain the first N prediction rows in plain language",
+    )
+    parser.add_argument(
+        "--llm-apply-preprocessing",
+        action="store_true",
+        help="Apply the LLM-recommended preprocessing chain to the dataset",
     )
 
     # Prediction inputs
@@ -472,6 +553,16 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             random_state=args.random_state,
         )
 
+        # Enable LLM advisor if requested
+        if args.llm or args.llm_check or args.llm_ask or args.llm_suggest_target \
+                or args.llm_suggest_preprocessing or args.llm_apply_preprocessing \
+                or args.llm_explain_results or args.llm_explain_predictions:
+            agent.enable_llm(
+                base_url=args.llm_url,
+                model=args.llm_model,
+                timeout=args.llm_timeout,
+            )
+
         # ========== Database exploration ==========
         if args.list_tables:
             tables = agent.list_tables()
@@ -504,6 +595,53 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                         print(f"  Foreign Keys:")
                         for fk in t["foreign_keys"]:
                             print(f"    - {fk['constrained_columns']} -> {fk['referred_table']}.{fk['referred_columns']}")
+            agent.close()
+            return 0
+
+        # ========== LLM check / SQL question (needs DB only) ==========
+        if args.llm_check or (args.llm_ask and agent.llm):
+            llm_status = agent.llm_check()
+            if args.json:
+                _print_json(llm_status)
+            else:
+                if llm_status["available"]:
+                    print(f"LLM advisor available: {llm_status['detail']}")
+                else:
+                    print(f"LLM advisor unavailable: {llm_status['detail']}")
+
+            if args.llm_ask and agent.llm:
+                if llm_status["available"]:
+                    print("\nGenerating SQL from question...")
+                    sql_result = agent.llm_generate_sql(args.llm_ask)
+                    if "error" in sql_result:
+                        print(f"Error: {sql_result['error']}", file=sys.stderr)
+                    else:
+                        if args.json:
+                            _print_json(sql_result)
+                        else:
+                            print("=" * 60)
+                            print("LLM-GENERATED SQL")
+                            print("=" * 60)
+                            print(sql_result["sql"])
+                            if sql_result.get("explanation"):
+                                print(f"\nExplanation: {sql_result['explanation']}")
+                            print("=" * 60)
+                        # Optionally execute the query and show results
+                        # (only if not just checking)
+                        if not args.llm_check:
+                            try:
+                                executed = agent.execute_query(sql_result["sql"])
+                                print(f"\nQuery executed: {len(executed)} rows, {len(executed.columns)} cols")
+                                print(executed.head(10).to_string(index=False))
+                            except Exception as e:
+                                print(f"Could not execute generated SQL: {e}", file=sys.stderr)
+                else:
+                    print(
+                        "Could not convert question to SQL: LM Studio server is not reachable. "
+                        "Start LM Studio, load a model, then retry.",
+                        file=sys.stderr,
+                    )
+
             agent.close()
             return 0
 
@@ -573,6 +711,71 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             # No data source specified - show help
             parser.error("Either --table, --query, or --load-model is required")
 
+        # ========== LLM: Suggest target column ==========
+        if args.llm_suggest_target:
+            suggestion = agent.llm_suggest_target(preferred=args.target)
+            if args.json:
+                _print_json(suggestion)
+            else:
+                print("=" * 60)
+                print("LLM TARGET COLUMN SUGGESTION")
+                print("=" * 60)
+                if "error" in suggestion:
+                    print(f"Error: {suggestion['error']}")
+                else:
+                    print(f"Target column: {suggestion['target_column']}")
+                    print(f"Task type: {suggestion['task_type']}")
+                    print(f"Reasoning: {suggestion['reasoning']}")
+                    print(f"Source: {suggestion.get('source', 'llm')}")
+                print("=" * 60)
+            agent.close()
+            return 0
+
+        # ========== LLM Preprocessing Recommendations ==========
+        llm_preprocess_ops: List[Dict[str, Any]] = []
+        if args.llm_suggest_preprocessing or args.llm_apply_preprocessing:
+            # Make sure the agent knows the intended target column so the LLM
+            # never scales/removes it.
+            if args.target and not agent.target_column:
+                agent.target_column = args.target
+            suggestion = agent.llm_suggest_preprocessing()
+            if args.json and not args.llm_apply_preprocessing:
+                _print_json(suggestion)
+            else:
+                print("=" * 60)
+                print("LLM PREPROCESSING RECOMMENDATION")
+                print("=" * 60)
+                if "error" in suggestion:
+                    print(f"Error: {suggestion['error']}")
+                else:
+                    llm_preprocess_ops = suggestion.get("operations", [])
+                    print(f"Recommended operations: {len(llm_preprocess_ops)}")
+                    for op in llm_preprocess_ops:
+                        print(f"  - {op}")
+                    if suggestion.get("preferred"):
+                        print(f"\nRationale: {suggestion['preferred']}")
+                    print(f"Source: {suggestion.get('source', 'llm')}")
+                print("=" * 60)
+
+            if args.llm_apply_preprocessing and llm_preprocess_ops:
+                # Resolve scale operations: replace 'exclude' with explicit column list
+                for op in llm_preprocess_ops:
+                    if op.get("op") == "scale_numeric" and "exclude" in op:
+                        exclude_cols = op.pop("exclude") or []
+                        numeric_cols = [
+                            c for c in agent.current_df.columns
+                            if pd.api.types.is_numeric_dtype(agent.current_df[c].dtype)
+                            and c not in exclude_cols
+                        ]
+                        if numeric_cols:
+                            op["columns"] = numeric_cols
+                agent.apply_preprocessing(llm_preprocess_ops)
+                print(f"\nApplied {len(llm_preprocess_ops)} LLM-recommended operation(s).")
+
+            if not args.llm_apply_preprocessing:
+                agent.close()
+                return 0
+
         # ========== Preprocessing ==========
         preprocess_ops = _build_preprocessing_ops(args)
         if preprocess_ops:
@@ -612,7 +815,7 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                         print(f"  - {op_name}: {details}")
                     print(f"Final shape: {summary['current_shape']['rows']} rows x {summary['current_shape']['columns']} cols")
                     print("=" * 60)
-        elif args.preprocess_summary:
+        elif args.preprocess_summary and not (args.llm_apply_preprocessing and llm_preprocess_ops):
             print("No preprocessing operations were specified.")
 
         # ========== Save preprocessed database ==========
@@ -734,6 +937,23 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                     else:
                         print(f"  {k}: {v}")
 
+            # Show LLM interpretation of training results if requested
+            if args.llm_explain_results:
+                interpretation = agent.llm_explain_results(results)
+                if args.json:
+                    _print_json(interpretation)
+                else:
+                    print("\n" + "=" * 60)
+                    print("LLM INTERPRETATION OF RESULTS")
+                    print("=" * 60)
+                    if "error" in interpretation:
+                        print(f"Error: {interpretation['error']}")
+                    else:
+                        print(interpretation.get("explanation", ""))
+                        for hl in interpretation.get("highlights", []):
+                            print(f"\n  * {hl}")
+                    print("=" * 60)
+
             # Make predictions (apply same feature-level preprocessing to prediction data)
             pred_df = _load_prediction_data(args.predict, args.predict_file)
             if pred_df is not None:
@@ -741,10 +961,11 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                 if agent.preprocessor is not None and agent.preprocessor.fitted_transformers:
                     pred_df = agent.preprocessor.transform(pred_df)
 
-                # Re-apply feature-engineering ops to prediction data
-                if preprocess_ops:
+                # Re-apply feature-engineering ops (CLI + LLM-recommended) to prediction data
+                effective_ops = preprocess_ops + llm_preprocess_ops
+                if effective_ops:
                     feature_ops = [
-                        op for op in preprocess_ops
+                        op for op in effective_ops
                         if op.get("op") in ("drop_columns", "keep_columns",
                                             "create_ratio", "create_product",
                                             "create_difference", "create_bins")
@@ -779,6 +1000,27 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
                     _print_json(predictions.to_dict(orient="records"))
                 else:
                     print(_format_predictions(predictions))
+
+                # Explain predictions in plain language if requested
+                if args.llm_explain_predictions and agent.llm:
+                    try:
+                        top_n = max(1, int(args.llm_explain_predictions))
+                    except ValueError:
+                        top_n = 5
+                    narratives = agent.llm_explain_predictions(predictions, top_n=top_n)
+                    if args.json:
+                        names = {"narratives": narratives}
+                        _print_json(names)
+                    else:
+                        print("\n" + "=" * 60)
+                        print("LLM PREDICTION NARRATIVES")
+                        print("=" * 60)
+                        if "error" in narratives:
+                            print(f"Error: {narratives['error']}")
+                        else:
+                            for i, narration in enumerate(narratives.get("narratives", []), 1):
+                                print(f"  {i}. {narration}")
+                        print("=" * 60)
 
             agent.close()
             return 0

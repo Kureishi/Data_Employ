@@ -18,6 +18,7 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **Model Persistence**: Save and load trained models
 - **Feature Importance**: Identifies which features most influence predictions
 - **Data Preprocessing**: Drop/fill missing values, filter rows, scale features, encode categories, and create new features
+- **Local LLM Advisor (LM Studio)**: Natural-language → SQL, target column recommendations, preprocessing suggestions, model-result interpretation, and prediction narratives — all running locally with a heuristic fallback when the server is offline
 
 ## Installation
 
@@ -92,6 +93,30 @@ python main.py --load-model model.joblib --model-info --feature-importance
 
 # Output results as JSON
 python main.py -db sample_company.db -t employees -y salary --json
+
+# ===== LLM Advisor (requires LM Studio running locally) =====
+# Check LM Studio availability
+python main.py -db sample_company.db --llm-check
+
+# Ask a natural-language question -> SQL (executed automatically)
+python main.py -db sample_company.db --llm-ask "What is the average salary per department?"
+
+# Let the LLM recommend that best target column
+python main.py -db sample_company.db -t employees --llm-suggest-target
+
+# Let the LLM recommend a preprocessing chain
+python main.py -db sample_company.db -t employees -y salary --llm-suggest-preprocessing
+
+# Apply the LLM-recommended preprocessing chain and train
+python main.py -db sample_company.db -t employees -y salary --llm-apply-preprocessing
+
+# Explain the training results in plain language
+python main.py -db sample_company.db -t employees -y salary --llm-explain-results
+
+# Explain the first 3 predictions in plain language
+python main.py -db sample_company.db -t employees -y salary \
+    --predict '{"age": 30, "years_experience": 5.0, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75.0, "satisfaction_score": 70.0}' \
+    --llm-explain-predictions 3
 
 # Show help
 python main.py --help
@@ -294,6 +319,17 @@ The agent automatically evaluates these models and selects the best one:
 | `--analyze` | Analysis type: `summary`, `correlations`, `insights`, `target` |
 | `--feature-importance` | Show feature importance from trained model |
 | `--model-info` | Show information about trained model |
+| `--llm` | Enable the local LLM advisor (LM Studio) |
+| `--llm-url` | LM Studio server URL (default: `http://localhost:1234/v1`) |
+| `--llm-model` | LM Studio model name (default: server's loaded model) |
+| `--llm-timeout` | LLM request timeout in seconds (default: 60) |
+| `--llm-check` | Check LM Studio server availability |
+| `--llm-ask` | Natural-language question to convert into SQL |
+| `--llm-suggest-target` | Recommend a target column using the LLM (heuristic fallback) |
+| `--llm-suggest-preprocessing` | Recommend a preprocessing operation chain using the LLM |
+| `--llm-explain-results` | Plain-language interpretation of training results |
+| `--llm-explain-predictions` | Explain the first N prediction rows in plain language |
+| `--llm-apply-preprocessing` | Apply the LLM-recommended preprocessing chain |
 | `--predict` | JSON string of data to predict on |
 | `--predict-file` | CSV file containing data to predict on |
 | `--save-model` | Save trained model to path |
@@ -324,6 +360,13 @@ The agent automatically evaluates these models and selects the best one:
 | `predict_single(data)` | Predict a single record |
 | `get_model_info()` | Get trained model information |
 | `get_feature_importance()` | Get feature importance rankings |
+| `enable_llm(base_url, model, timeout)` | Enable the LLM advisor (LM Studio) |
+| `llm_check()` | Check LLM advisor availability |
+| `llm_generate_sql(question)` | Convert natural language to SQL |
+| `llm_suggest_target(preferred)` | Recommend a target column (heuristic fallback) |
+| `llm_suggest_preprocessing()` | Recommend a preprocessing chain |
+| `llm_explain_results(results)` | Interpret training results in plain language |
+| `llm_explain_predictions(predictions, top_n)` | Explain prediction rows in plain language |
 | `save_model(path)` | Save trained model to disk |
 | `load_model(path)` | Load a trained model |
 | `format_results(results)` | Format results as readable text |
@@ -333,6 +376,31 @@ The agent automatically evaluates these models and selects the best one:
 - `correlations` - Correlation matrix for numeric columns
 - `insights` - Per-column statistics and distributions
 - `target` - Target column distribution and feature correlations
+
+## LLM Advisor (LM Studio)
+
+The ML Agent can use a **local** LLM served by LM Studio for natural-language intelligence without sending sensitive company data to the cloud. LM Studio exposes an OpenAI-compatible API at `http://localhost:1234/v1`.
+
+### Setup
+
+1. Download and install [LM Studio](https://lmstudio.ai/)
+2. Download a model (e.g., Llama 3.1 8B, Qwen 2.5, etc.)
+3. Load the model in LM Studio
+4. Start the local server (Settings → Developer → Start Server)
+
+The ML Agent automatically connects to `http://localhost:1234/v1`. If the server is offline, every LLM method degrades gracefully to a built-in heuristic, so the agent never crashes.
+
+### Capabilities
+
+| Capability | CLI Flag | Description |
+|------------|----------|-------------|
+| Availability check | `--llm-check` | Pings LM Studio and reports the loaded model |
+| Natural language → SQL | `--llm-ask "..."` | Generates SQL, then executes it against the database |
+| Target recommendation | `--llm-suggest-target` | Recommends which column to predict, with task type |
+| Preprocessing advice | `--llm-suggest-preprocessing` | Recommends a chain of clean/feature-engineering ops |
+| Apply suggested preprocessing | `--llm-apply-preprocessing` | Applies the LLM-recommended ops automatically |
+| Result interpretation | `--llm-explain-results` | Explains the metrics/feature importances into plain language |
+| Prediction narratives | `--llm-explain-predictions N` | Explains the first N prediction rows |
 
 ## Project Structure
 
@@ -345,6 +413,7 @@ The agent automatically evaluates these models and selects the best one:
 │   ├── predictor.py         # Prediction engine
 │   ├── analyzer.py          # Data analysis module
 │   ├── preprocessor.py      # Data preprocessing module
+│   ├── llm_advisor.py       # Local LLM advisor (LM Studio)
 │   └── cli.py               # Command-line interface
 ├── main.py                  # CLI entry point
 ├── create_sample_db.py      # Sample database generator

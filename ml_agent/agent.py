@@ -7,6 +7,7 @@ from .model_selector import ModelSelector
 from .predictor import Predictor
 from .analyzer import DataAnalyzer
 from .preprocessor import DataPreprocessor
+from .llm_advisor import LLMAdvisor
 
 
 class MLAgent:
@@ -15,6 +16,7 @@ class MLAgent:
     1. Processes SQL databases (potentially with multiple tables)
     2. Determines the best machine learning model for the data
     3. Conducts analysis and produces predictions per user request
+    4. Uses a local LLM (LM Studio) for natural-language insights
     """
 
     def __init__(
@@ -48,6 +50,7 @@ class MLAgent:
         self.analyzer: Optional[DataAnalyzer] = None
         self.preprocessor: Optional[DataPreprocessor] = None
         self.target_column: Optional[str] = None
+        self.llm: Optional[LLMAdvisor] = None
 
     # ========== Database Operations ==========
 
@@ -310,6 +313,103 @@ class MLAgent:
         self.model_selector.load_model(path)
         self.target_column = self.model_selector.target_column
         self.predictor = Predictor(self.model_selector)
+
+    # ========== LLM Advisor Operations ==========
+
+    def enable_llm(
+        self,
+        base_url: str = "http://localhost:1234/v1",
+        model: Optional[str] = None,
+        timeout: int = 60,
+    ) -> None:
+        """
+        Enable the LLM advisor backed by LM Studio.
+
+        Args:
+            base_url: LM Studio server URL (default: http://localhost:1234/v1).
+            model: Optional model name to use.
+            timeout: Request timeout in seconds.
+        """
+        self.llm = LLMAdvisor(
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+        )
+
+    def llm_check(self) -> Dict[str, Any]:
+        """Check LLM advisor availability. Returns dict with 'available' and 'detail'."""
+        if self.llm is None:
+            return {
+                "available": False,
+                "detail": "LLM advisor not enabled.",
+            }
+        available, detail = self.llm.check_connection()
+        return {"available": available, "detail": detail}
+
+    def llm_generate_sql(self, question: str) -> Dict[str, Any]:
+        """
+        Convert a natural-language question into SQL using the local LLM.
+
+        Requires an active database connection.
+        """
+        if self.llm is None:
+            self.enable_llm()
+        overview = self.db.get_database_overview()
+        return self.llm.generate_sql(question, overview["tables"])
+
+    def llm_suggest_target(self, preferred: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Recommend a target column (and task type) using the LLM.
+
+        Falls back to heuristics if the LLM server is unreachable.
+        """
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
+        if self.llm is None:
+            self.enable_llm()
+        return self.llm.suggest_target(self.current_df, preferred=preferred)
+
+    def llm_suggest_preprocessing(self) -> Dict[str, Any]:
+        """
+        Recommend a preprocessing operation chain using the LLM.
+
+        Falls back to heuristics if the LLM server is unreachable.
+        """
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
+        if self.llm is None:
+            self.enable_llm()
+        return self.llm.suggest_preprocessing(
+            self.current_df,
+            target_column=self.target_column,
+        )
+
+    def llm_explain_results(self, results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Produce a plain-language interpretation of model training results."""
+        if self.llm is None:
+            self.enable_llm()
+        if results is None:
+            if self.model_selector is None:
+                raise RuntimeError("No training results available. Call train() first.")
+            results = self.model_selector.get_result_summary()
+        return self.llm.explain_results(results)
+
+    def llm_explain_predictions(
+        self,
+        predictions: pd.DataFrame,
+        top_n: int = 5,
+    ) -> Dict[str, Any]:
+        """Explain prediction rows in plain language using the LLM."""
+        if self.llm is None:
+            self.enable_llm()
+        model_info = None
+        if self.predictor is not None:
+            model_info = self.predictor.get_model_info()
+        return self.llm.explain_predictions(
+            predictions,
+            model_info=model_info,
+            top_n=top_n,
+        )
 
     # ========== Utility ==========
 
