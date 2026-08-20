@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ML Agent Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span class="logo-icon">🤖</span>
+            <h1>ML Agent</h1>
+        </div>
+        <div class="header-actions">
+            <div id="llm-status" class="status-badge">
+                <span class="dot"></span>
+                <span>LLM: Checking...</span>
+            </div>
+            <div id="db-status" class="status-badge">
+                <span class="dot"></span>
+                <span>Not Connected</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-section">
+                <h3>Database</h3>
+                <div class="connect-form">
+                    <input type="text" id="db-connection" placeholder="sample_company.db or sqlite:///path.db" />
+                    <button id="btn-connect" class="btn btn-primary btn-sm">Connect</button>
+                </div>
+                <div class="upload-form">
+                    <input type="file" id="db-file" accept=".db,.sqlite,.sqlite3" />
+                    <button id="btn-upload-db" class="btn btn-outline btn-sm">Upload DB</button>
+                </div>
+                <div id="tables-list" class="tables-list">
+                    <p class="hint">Connect to a database to see tables.</p>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3>Quick Actions</h3>
+                <button id="btn-overview" class="btn btn-outline btn-sm">Database Overview</button>
+                <button id="btn-llm-check" class="btn btn-outline btn-sm">Check LLM</button>
+            </div>
+        </aside>
+
+        <!-- Main content -->
+        <section class="content">
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab active" data-tab="data">Data</button>
+                <button class="tab" data-tab="preprocess">Preprocess</button>
+                <button class="tab" data-tab="analyze">Analyze</button>
+                <button class="tab" data-tab="train">Train</button>
+                <button class="tab" data-tab="predict">Predict</button>
+                <button class="tab" data-tab="llm">LLM Advisor</button>
+            </div>
+
+            <!-- Data Tab -->
+            <div id="tab-data" class="tab-content active">
+                <div class="card">
+                    <h2>Load Data</h2>
+                    <div class="form-row">
+                        <select id="data-table-select">
+                            <option value="">Select a table...</option>
+                        </select>
+                        <input type="number" id="data-limit" placeholder="Limit (optional)" min="1" />
+                        <button id="btn-load-table" class="btn btn-primary">Load Table</button>
+                    </div>
+                    <div class="form-row">
+                        <textarea id="data-query" placeholder="Or run a custom SQL query: SELECT * FROM employees WHERE salary > 50000" rows="2"></textarea>
+                        <button id="btn-run-query" class="btn btn-primary">Run Query</button>
+                    </div>
+                    <div id="data-info" class="info-box"></div>
+                    <div id="data-preview" class="table-container"></div>
+                </div>
+            </div>
+
+            <!-- Preprocess Tab -->
+            <div id="tab-preprocess" class="tab-content">
+                <div class="card">
+                    <h2>Preprocessing</h2>
+                    <div class="form-row">
+                        <select id="preprocess-op">
+                            <option value="dropna">Drop Missing Values</option>
+                            <option value="fillna">Fill Missing Values</option>
+                            <option value="drop_columns">Drop Columns</option>
+                            <option value="keep_columns">Keep Columns</option>
+                            <option value="drop_duplicates">Drop Duplicates</option>
+                            <option value="filter_rows">Filter Rows</option>
+                            <option value="scale_numeric">Scale Numeric</option>
+                            <option value="encode_categorical">Encode Categorical</option>
+                            <option value="sample_rows">Sample Rows</option>
+                            <option value="head_rows">Keep First N Rows</option>
+                        </select>
+                        <input type="text" id="preprocess-params" placeholder="Parameters (e.g., method=median, columns=a,b)" />
+                        <button id="btn-add-op" class="btn btn-outline">Add Operation</button>
+                    </div>
+                    <div id="preprocess-queue" class="op-queue"></div>
+                    <div class="form-row">
+                        <button id="btn-apply-preprocess" class="btn btn-primary">Apply Operations</button>
+                        <button id="btn-llm-suggest-preprocess" class="btn btn-outline">LLM Suggest</button>
+                        <button id="btn-clear-preprocess" class="btn btn-danger">Clear</button>
+                    </div>
+                    <div id="preprocess-result" class="data-box"></div>
+                </div>
+            </div>
+
+            <!-- Analyze Tab -->
+            <div id="tab-analyze" class="tab-content">
+                <div class="card">
+                    <h2>Data Analysis</h2>
+                    <div class="form-row">
+                        <select id="analyze-type">
+                            <option value="summary">Summary</option>
+                            <option value="correlations">Correlations</option>
+                            <option value="insights">Column Insights</option>
+                            <option value="target">Target Analysis</option>
+                        </select>
+                        <input type="text" id="analyze-target" placeholder="Target column (optional)" />
+                        <button class="btn btn-primary" id="btn-analyze">Analyze</button>
+                    </div>
+                    <div id="analyze-result" class="data-box"></div>
+                </div>
+            </div>
+
+            <!-- Train Tab -->
+            <div id="tab-train" class="tab-content">
+                <div class="card">
+                    <h2>Train Model</h2>
+                    <div class="form-row">
+                        <input type="text" id="train-target" placeholder="Target column (e.g., salary)" />
+                        <select id="train-task-type">
+                            <option value="">Auto-detect</option>
+                            <option value="regression">Regression</option>
+                            <option value="classification">Classification</option>
+                        </select>
+                        <button class="btn btn-primary" id="btn-train">Train Model</button>
+                    </div>
+                    <div id="train-result" class="data-box"></div>
+                </div>
+            </div>
+
+            <!-- Predict Tab -->
+            <div id="tab-predict" class="tab-content">
+                <div class="card">
+                    <h2>Make Predictions</h2>
+                    <div class="form-row">
+                        <textarea id="predict-data" placeholder='JSON data: {"age": 30, "years_experience": 5, "education_level": "Bachelor"}' rows="3"></textarea>
+                        <button class="btn btn-primary" id="btn-predict">Predict</button>
+                    </div>
+                    <div id="predict-result" class="data-box"></div>
+                </div>
+            </div>
+
+            <!-- LLM Tab -->
+            <div id="tab-llm" class="tab-content">
+                <div class="card">
+                    <h2>LLM Advisor</h2>
+                    <div class="form-row">
+                        <input type="text" id="llm-url" placeholder="LM Studio URL" value="http://localhost:1234/v1" />
+                        <input type="text" id="llm-model" placeholder="Model (optional)" />
+                        <button class="btn btn-primary" id="btn-llm-enable">Enable LLM</button>
+                    </div>
+                    <div class="form-row">
+                        <textarea id="llm-question" placeholder="Ask a natural-language question: What is the average salary per department?" rows="2"></textarea>
+                        <button class="btn btn-primary" id="btn-llm-sql">Generate SQL</button>
+                    </div>
+                    <div class="form-row">
+                        <button class="btn btn-outline" id="btn-llm-suggest-target">Suggest Target</button>
+                        <button class="btn btn-outline" id="btn-llm-explain-results">Explain Results</button>
+                    </div>
+                    <div id="llm-result" class="data-box"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

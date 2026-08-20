@@ -408,6 +408,92 @@ The ML Agent automatically connects to `http://localhost:1234/v1`. If the server
 | Result interpretation | `--llm-explain-results` | Explains the metrics/feature importances into plain language |
 | Prediction narratives | `--llm-explain-predictions N` | Explains the first N prediction rows |
 
+## Web API & Dashboard
+
+The ML Agent includes a **Flask-based web API** and a **browser dashboard** for interacting with the agent visually.
+
+### Quick Start
+
+```bash
+# Start the web server (auto-connects to a database)
+python web_api.py --db sample_company.db
+
+# Or start without a database and connect via the UI
+python web_api.py
+
+# Custom host/port
+python web_api.py --db sample_company.db --host 0.0.0.0 --port 8080
+```
+
+Then open **http://localhost:5000** in your browser.
+
+### Dashboard Features
+
+| Tab | Description |
+|-----|-------------|
+| **Data** | Connect to a database, browse tables, run SQL queries, preview data |
+| **Preprocess** | Queue and apply preprocessing operations, or let the LLM suggest them |
+| **Analyze** | Run summary, correlations, insights, and target analysis |
+| **Train** | Train the best model on a target column (auto-detect or explicit task type) |
+| **Predict** | Make predictions on new data via JSON input |
+| **LLM Advisor** | Enable LM Studio, ask natural-language questions, get target/preprocessing suggestions, and explain results |
+
+### REST API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/state` | Current agent state (connection, loaded data, model, LLM) |
+| `POST` | `/api/connect` | Connect to a database `{"connection": "sample_company.db"}` |
+| `POST` | `/api/disconnect` | Disconnect from the database |
+| `GET` | `/api/tables` | List all tables |
+| `GET` | `/api/tables/<table>/schema` | Get table schema |
+| `GET` | `/api/tables/<table>/preview` | Preview table data |
+| `GET` | `/api/overview` | Comprehensive database overview |
+| `POST` | `/api/load` | Load a table as the working dataset `{"table": "employees"}` |
+| `POST` | `/api/query` | Execute a SQL query `{"query": "SELECT * FROM employees"}` |
+| `POST` | `/api/load-query` | Load query results as the working dataset |
+| `POST` | `/api/preprocess` | Apply preprocessing operations `{"operations": [{"op": "dropna"}]}` |
+| `GET` | `/api/preprocess-summary` | Get preprocessing summary |
+| `POST` | `/api/save-preprocessed-db` | Save preprocessed dataset as a new database |
+| `POST` | `/api/analyze` | Run analysis `{"type": "summary", "target_column": "salary"}` |
+| `POST` | `/api/train` | Train a model `{"target_column": "salary", "task_type": null}` |
+| `GET` | `/api/model-info` | Get trained model information |
+| `POST` | `/api/predict` | Make predictions `{"data": [{"age": 30, ...}]}` |
+| `POST` | `/api/save-model` | Save the trained model `{"path": "model.joblib"}` |
+| `POST` | `/api/load-model` | Load a trained model `{"path": "model.joblib"}` |
+| `POST` | `/api/llm/enable` | Enable the LLM advisor `{"base_url": "...", "model": "..."}` |
+| `GET` | `/api/llm/check` | Check LLM availability |
+| `POST` | `/api/llm/sql` | Natural-language → SQL `{"question": "..."}` |
+| `POST` | `/api/llm/suggest-target` | Recommend a target column |
+| `POST` | `/api/llm/suggest-preprocessing` | Recommend preprocessing operations |
+| `POST` | `/api/llm/apply-preprocessing` | Apply LLM-recommended preprocessing |
+| `POST` | `/api/llm/explain-results` | Explain training results in plain language |
+| `POST` | `/api/llm/explain-predictions` | Explain prediction rows |
+
+### Example API Usage
+
+```bash
+# Connect to a database
+curl -X POST http://localhost:5000/api/connect \
+  -H "Content-Type: application/json" \
+  -d '{"connection": "sample_company.db"}'
+
+# Load a table
+curl -X POST http://localhost:5000/api/load \
+  -H "Content-Type: application/json" \
+  -d '{"table": "employees"}'
+
+# Train a model
+curl -X POST http://localhost:5000/api/train \
+  -H "Content-Type: application/json" \
+  -d '{"target_column": "salary"}'
+
+# Make a prediction
+curl -X POST http://localhost:5000/api/predict \
+  -H "Content-Type: application/json" \
+  -d '{"data": {"age": 30, "years_experience": 5, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75, "satisfaction_score": 70}}'
+```
+
 ## Project Structure
 
 ```
@@ -421,6 +507,12 @@ The ML Agent automatically connects to `http://localhost:1234/v1`. If the server
 │   ├── preprocessor.py      # Data preprocessing module
 │   ├── llm_advisor.py       # Local LLM advisor (LM Studio)
 │   └── cli.py               # Command-line interface
+├── web/
+│   └── static/
+│       ├── index.html       # Web dashboard
+│       ├── style.css        # Dashboard styles
+│       └── app.js           # Dashboard JavaScript
+├── web_api.py               # Flask web API server
 ├── main.py                  # CLI entry point
 ├── create_sample_db.py      # Sample database generator
 ├── demo.py                  # Full workflow demo

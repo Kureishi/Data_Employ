@@ -29,6 +29,7 @@ CORE_DEPS = {
     "sqlalchemy": "sqlalchemy",
     "joblib": "joblib",
     "tabulate": "tabulate",
+    "flask": "flask",
 }
 
 
