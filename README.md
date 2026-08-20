@@ -399,7 +399,7 @@ The ML Agent automatically connects to `http://localhost:1234/v1`. If the server
 | Target recommendation | `--llm-suggest-target` | Recommends which column to predict, with task type |
 | Preprocessing advice | `--llm-suggest-preprocessing` | Recommends a chain of clean/feature-engineering ops |
 | Apply suggested preprocessing | `--llm-apply-preprocessing` | Applies the LLM-recommended ops automatically |
-| Result interpretation | `--llm-explain-results` | Explains the metrics/feature importances into plain language |
+| Result interpretation | `--llm-explain-results` | Watches the metrics/feature importances into plain language |
 | Prediction narratives | `--llm-explain-predictions N` | Explains the first N prediction rows |
 
 ## Project Structure
@@ -421,7 +421,3 @@ The ML Agent automatically connects to `http://localhost:1234/v1`. If the server
 ├── requirements.txt         # Dependencies
 └── README.md                # This file
 ```
-
-## License
-
-MIT

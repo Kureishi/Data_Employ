@@ -2,19 +2,21 @@
 LLM advisor module for the ML Agent.
 Provides natural-language intelligence using a local LLM served by LM Studio.
 
-LM Studio exposes an OpenAI-compatible API at http://localhost:1234/v1,
-so all requests here use the /chat/completions endpoint without shipping
-the full openai SDK — only `requests` is needed.
+LM Studio exposes an OpenAI-compatible API at http://localhost:1234/v1.
+All requests are done with the Python standard library (urllib) so no
+extra dependency is required.
 
 Every method degrades gracefully: if the LLM server is unreachable or
 times out, a heuristic fallback result is returned instead of crashing.
 """
 import json
 import re
+import socket
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-import requests
 
 # Default LM Studio local server
 DEFAULT_BASE_URL = "http://localhost:1234/v1"
@@ -63,16 +65,18 @@ class LLMAdvisor:
     def check_connection(self) -> Tuple[bool, str]:
         """Check if the LM Studio server is reachable. Returns (available, detail)."""
         try:
-            resp = requests.get(f"{self.base_url}/models", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                models = [m.get("id", "") for m in data.get("data", [])]
-                self._available = True
-                if self.model:
-                    models = [m for m in models if self.model.lower() in m.lower()]
-                detail = models[0] if models else "Server reachable"
-                return True, detail
-            return False, f"HTTP {resp.status_code}"
+            req = urllib.request.Request(f"{self.base_url}/models")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                else:
+                    return False, f"HTTP {resp.status}"
+            models = [m.get("id", "") for m in data.get("data", [])]
+            self._available = True
+            if self.model:
+                models = [m for m in models if self.model.lower() in m.lower()]
+            detail = models[0] if models else "Server reachable"
+            return True, detail
         except Exception as e:
             self._available = False
             return False, str(e)
@@ -84,6 +88,33 @@ class LLMAdvisor:
     # --------------------------------------------------------------------------
     # Core /chat/completions request
     # --------------------------------------------------------------------------
+
+    def _http_request(self, path: str, payload: Optional[Dict[str, Any]] = None, timeout: int = 5) -> bytes:
+        """
+        Perform an HTTP request to LM Studio using the standard library.
+
+        Args:
+            path: URL path (e.g. "/models" or "/chat/completions").
+            payload: Optional JSON payload for POST requests.
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Raw response bytes.
+        """
+        url = f"{self.base_url}{path}"
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        else:
+            req = urllib.request.Request(url, method="GET")
+
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
 
     def _chat(
         self,
@@ -110,38 +141,43 @@ class LLMAdvisor:
         }
         if self.model:
             payload["model"] = self.model
-        if response_format:
-            payload["response_format"] = response_format
+        # LM Studio's API only accepts "json_schema" or "text" as
+        # response_format.type (it rejects OpenAI's legacy "json_object").
+        # Our prompt + _parse_json already reliably extract JSON, so we
+        # skip sending response_format entirely to stay compatible.
 
         try:
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                timeout=self.timeout,
-            )
-        except requests.exceptions.ConnectionError:
+            raw = self._http_request("/chat/completions", payload=payload, timeout=self.timeout)
+        except urllib.error.HTTPError as e:
             self._available = False
             raise LLMAdvisorError(
-                "Cannot reach LM Studio. Start LM Studio and load a model, "
-                f"or verify the server at {self.base_url}"
+                f"LM Studio returned HTTP {e.code}: {e.read()[:300]}"
             )
-        except requests.exceptions.Timeout:
+        except urllib.error.URLError as e:
+            self._available = False
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, ConnectionRefusedError):
+                raise LLMAdvisorError(
+                    "Cannot reach LM Studio. Start LM Studio and load a model, "
+                    f"or verify the server at {self.base_url}"
+                )
+            raise LLMAdvisorError(f"Cannot reach LM Studio: {reason}")
+        except socket.timeout:
             self._available = False
             raise LLMAdvisorError(
                 f"LM Studio request timed out after {self.timeout}s. "
                 "The model may still be loading or the prompt is too large."
             )
 
-        if resp.status_code != 200:
-            raise LLMAdvisorError(
-                f"LM Studio returned HTTP {resp.status_code}: {resp.text[:300]}"
-            )
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise LLMAdvisorError(f"Unexpected LM Studio response: {e}")
 
-        data = resp.json()
         self._available = True
         try:
             return data["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError) as e:
+        except (KeyError, IndexError, TypeError) as e:
             raise LLMAdvisorError(f"Unexpected LM Studio response format: {e}")
 
     @staticmethod
@@ -175,7 +211,10 @@ class LLMAdvisor:
             nulls = int(df[col].isna().sum())
             stats = f"dtype={dtype}, unique={nunique}, nulls={nulls}"
             if pd.api.types.is_numeric_dtype(df[col].dtype) and df[col].notna().any():
-                stats += f", min={float(df[col].min()):.2f}, max={float(df[col].max()):.2f}, mean={float(df[col].mean()):.2f}"
+                stats += (
+                    f", min={float(df[col].min()):.2f}, "
+                    f"max={float(df[col].max()):.2f}, mean={float(df[col].mean()):.2f}"
+                )
             else:
                 top = df[col].value_counts().head(5)
                 vals = ", ".join(f"{k}({v})" for k, v in top.items())
@@ -400,7 +439,7 @@ class LLMAdvisor:
         create_difference(c1, c2, new), create_bins(col, bins)
 
         Returns:
-            dict: {"operations": [...], "rationale": "..."}
+            dict: {"operations": [...], "preferred": "..."}
         """
         summary = self._summarize_dataframe(df, sample_rows=3)
 
@@ -427,8 +466,8 @@ class LLMAdvisor:
             '  {"op": "create_bins", "column": "a", "bins": 5}\n'
             "\n"
             "Rules: never scale or drop the target column; only reference column "
-            "names that actually exist; return an empty operations list if the "
-            "data is already clean. Return ONLY JSON: "
+            "names that actually exist; return an empty list if the data is "
+            "already clean. Return ONLY JSON: "
             '{"operations": [...], "preferred": "<why these ops>"}. '
             "No markdown fences."
         )
@@ -448,7 +487,10 @@ class LLMAdvisor:
             )
             parsed = self._parse_json(raw)
             if parsed is None:
-                return {"error": f"Could not parse LLM response: {raw[:200]}"}
+                return self._heuristic_suggest_preprocessing(
+                    df, target_column,
+                    error=f"Could not parse LLM response: {raw[:200]}",
+                )
             ops = parsed.get("operations", [])
             # Sanitize: reject ops referencing the target
             if target_column:
@@ -457,7 +499,8 @@ class LLMAdvisor:
                     if all(
                         str(v) != target_column
                         for k, v in op.items()
-                        if k in ("columns", "exclude") or k in ("numerator", "denominator", "col1", "col2", "column")
+                        if k in ("columns", "exclude")
+                        or k in ("numerator", "denominator", "col1", "col2", "column")
                     )
                 ]
             return {
@@ -474,7 +517,7 @@ class LLMAdvisor:
         target_column: Optional[str] = None,
         error: str = "",
     ) -> Dict[str, Any]:
-        """Simple fallback: drop constants/IDs/free-text, fillna, scale numeric (excluding target)."""
+        """Simple fallback: drop constants/IDs/free-text, fillna, then scale numeric (excluding target)."""
         ops: List[Dict[str, Any]] = []
         for col in df.columns:
             if col == target_column:
@@ -540,7 +583,6 @@ class LLMAdvisor:
         Returns:
             {"explanation": "...", "highlights": [...]} or {"error": ...}
         """
-        # Build a compact, serializable summary of the results
         summary_lines = [
             f"Task type: {results.get('task_type')}",
             f"Target column: {results.get('target_column')}",
@@ -644,8 +686,12 @@ class LLMAdvisor:
                 response_format={"type": "json_object"},
             )
             parsed = self._parse_json(raw)
-            if parsed and parsed.get("predictions"):
-                return {"narratives": parsed["predictions"]}
+            if parsed and (parsed.get("narratives") or parsed.get("predictions")):
+                items = parsed.get("narratives") or parsed.get("predictions")
+                # Ensure we return a list (some models return a single string)
+                if isinstance(items, str):
+                    items = [items]
+                return {"narratives": items}
             return {"error": f"Could not parse LLM response: {raw[:200]}"}
         except LLMAdvisorError as e:
             return {"error": str(e)}
