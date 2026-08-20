@@ -36,6 +36,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> **Auto-install**: `main.py` automatically checks for the required packages
+> (pandas, numpy, scikit-learn, SQLAlchemy, joblib, tabulate) and installs any
+> missing ones into your active virtual environment via pip before running.
+> You can skip the manual `pip install` step entirely — just run
+> `python main.py ...` and it will set itself up.
+
 ## Quick Start
 
 ### 1. Create a sample database
@@ -399,7 +405,7 @@ The ML Agent automatically connects to `http://localhost:1234/v1`. If the server
 | Target recommendation | `--llm-suggest-target` | Recommends which column to predict, with task type |
 | Preprocessing advice | `--llm-suggest-preprocessing` | Recommends a chain of clean/feature-engineering ops |
 | Apply suggested preprocessing | `--llm-apply-preprocessing` | Applies the LLM-recommended ops automatically |
-| Result interpretation | `--llm-explain-results` | Watches the metrics/feature importances into plain language |
+| Result interpretation | `--llm-explain-results` | Explains the metrics/feature importances into plain language |
 | Prediction narratives | `--llm-explain-predictions N` | Explains the first N prediction rows |
 
 ## Project Structure
