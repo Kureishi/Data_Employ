@@ -15,11 +15,11 @@
         <div class="header-actions">
             <div id="llm-status" class="status-badge">
                 <span class="dot"></span>
-                <span>LLM: Checking...</span>
+                <span class="label">LLM: Checking...</span>
             </div>
             <div id="db-status" class="status-badge">
                 <span class="dot"></span>
-                <span>Not Connected</span>
+                <span class="label">Not Connected</span>
             </div>
         </div>
     </header>
@@ -143,6 +143,23 @@
                         <button class="btn btn-primary" id="btn-train">Train Model</button>
                     </div>
                     <div id="train-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Save / Load Model</h2>
+                    <div class="form-row">
+                        <input type="text" id="model-path" placeholder="model.joblib" value="model.joblib" />
+                        <button class="btn btn-primary" id="btn-save-model">Save Model</button>
+                        <button class="btn btn-outline" id="btn-download-model">Download</button>
+                    </div>
+                    <div class="form-row">
+                        <input type="text" id="model-load-path" placeholder="Path to a saved model file to load" />
+                        <button class="btn btn-primary" id="btn-load-model">Load Model</button>
+                    </div>
+                    <div class="form-row">
+                        <input type="file" id="model-file" accept=".joblib,.pkl,.pickle" />
+                        <button class="btn btn-primary" id="btn-upload-model">Upload &amp; Load</button>
+                    </div>
+                    <div id="model-persistence-result" class="info-box"></div>
                 </div>
             </div>
 

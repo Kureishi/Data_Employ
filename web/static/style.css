@@ -64,6 +64,9 @@ header {
 .header-actions {
     display: flex;
     gap: 12px;
+    min-width: 0;
+    justify-content: flex-end;
+    flex-wrap: wrap;
 }
 
 .status-badge {
@@ -76,6 +79,7 @@ header {
     border: 1px solid var(--border);
     font-size: 12px;
     color: var(--text-light);
+    max-width: 100%;
 }
 
 .status-badge .dot {
@@ -83,6 +87,15 @@ header {
     height: 8px;
     border-radius: 50%;
     background: var(--text-light);
+    flex-shrink: 0;
+}
+
+.status-badge .label {
+    min-width: 4ch;
+    max-width: 55vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .status-badge.connected .dot {
@@ -139,7 +152,8 @@ main {
     margin-bottom: 10px;
 }
 
-.upload-form input[type="file"] {
+.upload-form input[type="file"],
+.form-row input[type="file"] {
     font-size: 12px;
     padding: 6px 8px;
     border: 1px solid var(--border);
@@ -149,7 +163,8 @@ main {
     cursor: pointer;
 }
 
-.upload-form input[type="file"]:hover {
+.upload-form input[type="file"]:hover,
+.form-row input[type="file"]:hover {
     border-color: var(--primary);
 }
 
@@ -528,6 +543,25 @@ table.dataframe tr:hover {
         transform: translateX(0);
         opacity: 1;
     }
+}
+
+/* Button loading state */
+button:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.btn .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(127, 127, 127, 0.35);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+    flex-shrink: 0;
 }
 
 /* Loading indicator */

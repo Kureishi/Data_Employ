@@ -38,9 +38,31 @@ function showToast(message, type = 'info') {
 function setStatus(id, text, state) {
     const el = document.getElementById(id);
     if (!el) return;
-    el.querySelector('span').textContent = text;
+    const label = el.querySelector('.label') || el;
+    label.textContent = text;
+    label.title = text;
     el.className = 'status-badge';
     if (state) el.classList.add(state);
+}
+
+// ============ Loading state helpers ============
+
+function setLoading(btn, loading) {
+    if (!btn) return;
+    const sp = btn.querySelector('.spinner');
+    if (loading) {
+        if (sp) return; // already loading
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+        const spinner = document.createElement('span');
+        spinner.className = 'spinner';
+        spinner.setAttribute('aria-hidden', 'true');
+        btn.prepend(spinner);
+    } else {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        if (sp) sp.remove();
+    }
 }
 
 function formatJson(val) {
@@ -188,23 +210,26 @@ function populateTableSelect(tables) {
 // ============ Event handlers ============
 
 // Connect
-document.getElementById('btn-connect').addEventListener('click', async () => {
+document.getElementById('btn-connect').addEventListener('click', async (e) => {
     const conn = document.getElementById('db-connection').value.trim();
     if (!conn) {
         showToast('Please enter a database connection string.', 'error');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/connect', 'POST', { connection: conn });
         showToast(res.message || 'Connected!', 'success');
         await refreshState();
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // Upload database file
-document.getElementById('btn-upload-db').addEventListener('click', async () => {
+document.getElementById('btn-upload-db').addEventListener('click', async (e) => {
     const fileInput = document.getElementById('db-file');
     const file = fileInput.files[0];
     if (!file) {
@@ -220,6 +245,7 @@ document.getElementById('btn-upload-db').addEventListener('click', async () => {
         return;
     }
 
+    const _btn = e.currentTarget; setLoading(_btn, true);
     const formData = new FormData();
     formData.append('file', file);
 
@@ -235,19 +261,22 @@ document.getElementById('btn-upload-db').addEventListener('click', async () => {
         showToast(data.message || 'Database uploaded and connected!', 'success');
         fileInput.value = '';
         await refreshState();
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // Load table
-document.getElementById('btn-load-table').addEventListener('click', async () => {
+document.getElementById('btn-load-table').addEventListener('click', async (e) => {
     const table = document.getElementById('data-table-select').value;
     const limit = document.getElementById('data-limit').value || null;
     if (!table) {
         showToast('Please select a table.', 'error');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/load', 'POST', { table, limit });
         const info = document.getElementById('data-info');
@@ -256,18 +285,21 @@ document.getElementById('btn-load-table').addEventListener('click', async () => 
         document.getElementById('data-preview').innerHTML = renderTable(res.data, res.columns);
         showToast(`Loaded ${res.rows} rows from ${table}`, 'success');
         await refreshState();
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // Run query
-document.getElementById('btn-run-query').addEventListener('click', async () => {
+document.getElementById('btn-run-query').addEventListener('click', async (e) => {
     const query = document.getElementById('data-query').value.trim();
     if (!query) {
         showToast('Please enter a SQL query.', 'error');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/load-query', 'POST', { query });
         const info = document.getElementById('data-info');
@@ -276,13 +308,16 @@ document.getElementById('btn-run-query').addEventListener('click', async () => {
         document.getElementById('data-preview').innerHTML = renderTable(res.data, res.columns);
         showToast(`Loaded ${res.rows} rows from query`, 'success');
         await refreshState();
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // Overview
-document.getElementById('btn-overview').addEventListener('click', async () => {
+document.getElementById('btn-overview').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/overview');
         const overview = res.overview;
@@ -297,13 +332,16 @@ document.getElementById('btn-overview').addEventListener('click', async () => {
         }
         document.getElementById('data-info').className = 'info-box';
         document.getElementById('data-info').innerHTML = html;
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // LLM check
-document.getElementById('btn-llm-check').addEventListener('click', async () => {
+document.getElementById('btn-llm-check').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/llm/check');
         if (res.status.available) {
@@ -313,8 +351,10 @@ document.getElementById('btn-llm-check').addEventListener('click', async () => {
             setStatus('llm-status', 'LLM: Unavailable', 'error');
             showToast(`LLM unavailable: ${res.status.detail}`, 'warning');
         }
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
@@ -365,18 +405,21 @@ function renderPreprocessQueue() {
     });
 }
 
-document.getElementById('btn-apply-preprocess').addEventListener('click', async () => {
+document.getElementById('btn-apply-preprocess').addEventListener('click', async (e) => {
     if (preprocessQueue.length === 0) {
         showToast('No preprocessing operations queued.', 'warning');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/preprocess', 'POST', { operations: preprocessQueue });
         document.getElementById('preprocess-result').innerHTML = renderJson(res.summary);
         showToast(`Applied ${res.summary.total_operations} operations`, 'success');
         await refreshState();
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
@@ -386,7 +429,8 @@ document.getElementById('btn-clear-preprocess').addEventListener('click', () => 
     document.getElementById('preprocess-result').innerHTML = '';
 });
 
-document.getElementById('btn-llm-suggest-preprocess').addEventListener('click', async () => {
+document.getElementById('btn-llm-suggest-preprocess').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/llm/suggest-preprocessing', 'POST', {});
         const result = res.result;
@@ -399,33 +443,39 @@ document.getElementById('btn-llm-suggest-preprocess').addEventListener('click', 
         renderPreprocessQueue();
         document.getElementById('preprocess-result').innerHTML = renderJson(result);
         showToast(`LLM suggested ${ops.length} operations.`, 'success');
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // ============ Analysis ============
 
-document.getElementById('btn-analyze').addEventListener('click', async () => {
+document.getElementById('btn-analyze').addEventListener('click', async (e) => {
     const type = document.getElementById('analyze-type').value;
     const target = document.getElementById('analyze-target').value.trim() || null;
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/analyze', 'POST', { type, target_column: target });
         document.getElementById('analyze-result').innerHTML = renderJson(res.analysis);
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // ============ Training ============
 
-document.getElementById('btn-train').addEventListener('click', async () => {
+document.getElementById('btn-train').addEventListener('click', async (e) => {
     const target = document.getElementById('train-target').value.trim();
     const taskType = document.getElementById('train-task-type').value || null;
     if (!target) {
         showToast('Please enter a target column.', 'error');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/train', 'POST', { target_column: target, task_type: taskType });
         const t = res.training;
@@ -446,14 +496,16 @@ document.getElementById('btn-train').addEventListener('click', async () => {
         document.getElementById('train-result').innerHTML = html;
         showToast(`Trained ${t.best_model} (${t.task_type})`, 'success');
         await refreshState();
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // ============ Prediction ============
 
-document.getElementById('btn-predict').addEventListener('click', async () => {
+document.getElementById('btn-predict').addEventListener('click', async (e) => {
     const dataText = document.getElementById('predict-data').value.trim();
     if (!dataText) {
         showToast('Please enter prediction data as JSON.', 'error');
@@ -466,20 +518,24 @@ document.getElementById('btn-predict').addEventListener('click', async () => {
         showToast('Invalid JSON. Please check your input.', 'error');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/predict', 'POST', { data });
         document.getElementById('predict-result').innerHTML = renderTable(res.predictions, res.columns);
         showToast(`Made ${res.rows} prediction(s)`, 'success');
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
 // ============ LLM ============
 
-document.getElementById('btn-llm-enable').addEventListener('click', async () => {
+document.getElementById('btn-llm-enable').addEventListener('click', async (e) => {
     const url = document.getElementById('llm-url').value.trim() || 'http://localhost:1234/v1';
     const model = document.getElementById('llm-model').value.trim() || null;
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/llm/enable', 'POST', { base_url: url, model });
         if (res.status.available) {
@@ -489,17 +545,20 @@ document.getElementById('btn-llm-enable').addEventListener('click', async () => 
             setStatus('llm-status', 'LLM: Unavailable', 'error');
             showToast(`LLM enabled but unavailable: ${res.status.detail}`, 'warning');
         }
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
-document.getElementById('btn-llm-sql').addEventListener('click', async () => {
+document.getElementById('btn-llm-sql').addEventListener('click', async (e) => {
     const question = document.getElementById('llm-question').value.trim();
     if (!question) {
         showToast('Please enter a question.', 'error');
         return;
     }
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/llm/sql', 'POST', { question });
         const result = res.result;
@@ -512,12 +571,15 @@ document.getElementById('btn-llm-sql').addEventListener('click', async () => {
             html += `<br><br><strong>Explanation:</strong><br>${escapeHtml(result.explanation)}`;
         }
         document.getElementById('llm-result').innerHTML = html;
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
-document.getElementById('btn-llm-suggest-target').addEventListener('click', async () => {
+document.getElementById('btn-llm-suggest-target').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/llm/suggest-target', 'POST', {});
         const result = res.result;
@@ -530,12 +592,15 @@ document.getElementById('btn-llm-suggest-target').addEventListener('click', asyn
         html += `<strong>Reasoning:</strong> ${escapeHtml(result.reasoning)}<br>`;
         html += `<strong>Source:</strong> ${escapeHtml(result.source || 'llm')}`;
         document.getElementById('llm-result').innerHTML = html;
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 
-document.getElementById('btn-llm-explain-results').addEventListener('click', async () => {
+document.getElementById('btn-llm-explain-results').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/llm/explain-results', 'POST', {});
         const result = res.result;
@@ -556,8 +621,107 @@ document.getElementById('btn-llm-explain-results').addEventListener('click', asy
         }
         html += '</div>';
         document.getElementById('llm-result').innerHTML = html;
-    } catch (e) {
-        showToast(e.message, 'error');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
+    }
+});
+
+// ============ Model persistence ============
+
+document.getElementById('btn-save-model').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget;
+    const path = document.getElementById('model-path').value.trim() || 'model.joblib';
+    setLoading(_btn, true);
+    try {
+        const res = await api('/api/save-model', 'POST', { path });
+        const out = document.getElementById('model-persistence-result');
+        out.className = 'info-box success';
+        out.innerHTML = `<strong>Model saved.</strong><br>File: <code>${escapeHtml(res.saved_path)}</code><br>Use "Download" to get the portable .joblib file.`;
+        showToast(`Model saved to ${res.saved_path}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
+    }
+});
+
+document.getElementById('btn-download-model').addEventListener('click', () => {
+    const path = document.getElementById('model-path').value.trim() || 'model.joblib';
+    window.location.href = `/api/model/download?path=${encodeURIComponent(path)}`;
+});
+
+document.getElementById('btn-load-model').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget;
+    const path = document.getElementById('model-load-path').value.trim();
+    if (!path) {
+        showToast('Please enter a path to a model file.', 'error');
+        return;
+    }
+    setLoading(_btn, true);
+    try {
+        const res = await api('/api/load-model', 'POST', { path });
+        const info = res.model_info;
+        let html = `<strong>Model loaded:</strong> ${escapeHtml(info.best_model)}<br>`;
+        html += `<strong>Task:</strong> ${escapeHtml(info.task_type)}<br>`;
+        html += `<strong>Target:</strong> ${escapeHtml(info.target_column)}<br>`;
+        html += `<strong>CV Score:</strong> ${formatJson(info.best_cv_score)}<br>`;
+        html += renderMetrics(info.test_metrics);
+        document.getElementById('train-result').innerHTML = html;
+        showToast(`Model loaded: ${info.best_model}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
+    }
+});
+
+document.getElementById('btn-upload-model').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget;
+    const fileInput = document.getElementById('model-file');
+    const file = fileInput.files[0];
+    if (!file) {
+        showToast('Please select a model file to upload.', 'error');
+        return;
+    }
+
+    const allowedExts = ['.joblib', '.pkl', '.pickle'];
+    const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    if (!allowedExts.includes(ext)) {
+        showToast(`Unsupported file type '${ext}'. Allowed: .joblib, .pkl, .pickle`, 'error');
+        return;
+    }
+
+    setLoading(_btn, true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/upload-model', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok && data.error) {
+            throw new Error(data.error);
+        }
+        const info = data.model_info;
+        let html = `<strong>Model loaded (uploaded):</strong> ${escapeHtml(info.best_model)}<br>`;
+        html += `<strong>Task:</strong> ${escapeHtml(info.task_type)}<br>`;
+        html += `<strong>Target:</strong> ${escapeHtml(info.target_column)}<br>`;
+        html += `<strong>CV Score:</strong> ${formatJson(info.best_cv_score)}<br>`;
+        html += renderMetrics(info.test_metrics);
+        document.getElementById('train-result').innerHTML = html;
+        const out = document.getElementById('model-persistence-result');
+        out.className = 'info-box success';
+        out.innerHTML = `<strong>Model loaded from uploaded file:</strong> ${escapeHtml(file.name)}`;
+        fileInput.value = '';
+        showToast(`Model loaded: ${info.best_model}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
     }
 });
 

@@ -14,7 +14,7 @@ import tempfile
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from flask import Flask, jsonify, request, send_from_directory, Response
+from flask import Flask, jsonify, request, send_from_directory, send_file, Response
 from werkzeug.utils import secure_filename
 
 from ml_agent import MLAgent
@@ -35,6 +35,7 @@ UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ml_agent_uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_DB_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
+ALLOWED_MODEL_EXTENSIONS = {".joblib", ".pkl", ".pickle"}
 
 # ============ Helpers ============
 
@@ -514,6 +515,52 @@ def api_load_model():
             return _error(f"Model file not found: {path}")
 
         agent.load_model(path)
+        return _success(
+            loaded=True,
+            target_column=agent.target_column,
+            model_info=agent.get_model_info(),
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/model/download", methods=["GET"])
+def api_model_download():
+    try:
+        path = request.args.get("path", "model.joblib")
+        if not os.path.exists(path):
+            return _error(f"Model file not found: {path}", status=404)
+        return send_file(
+            os.path.abspath(path),
+            as_attachment=True,
+            download_name=os.path.basename(path),
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/upload-model", methods=["POST"])
+def api_upload_model():
+    try:
+        agent = _get_agent()
+        if "file" not in request.files:
+            return _error("No file uploaded. Use multipart/form-data with a 'file' field.")
+
+        file = request.files["file"]
+        if file.filename == "":
+            return _error("No file selected.")
+
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_MODEL_EXTENSIONS:
+            return _error(
+                f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_MODEL_EXTENSIONS))}"
+            )
+
+        filename = secure_filename(file.filename)
+        save_path = os.path.join(UPLOAD_DIR, filename)
+        file.save(save_path)
+
+        agent.load_model(save_path)
         return _success(
             loaded=True,
             target_column=agent.target_column,
