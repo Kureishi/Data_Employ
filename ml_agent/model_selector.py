@@ -3,7 +3,11 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import cross_val_score, train_test_split, StratifiedKFold, KFold
+from sklearn.model_selection import (
+    cross_val_score, train_test_split, StratifiedKFold, KFold,
+    GridSearchCV, RandomizedSearchCV,
+)
+from sklearn.base import BaseEstimator, clone
 from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
@@ -20,8 +24,8 @@ from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     r2_score, mean_squared_error, mean_absolute_error, roc_auc_score,
+    confusion_matrix, classification_report,
 )
-from sklearn.base import BaseEstimator
 
 warnings.filterwarnings("ignore")
 
@@ -51,6 +55,38 @@ class ModelSelector:
         "K-Neighbors": KNeighborsClassifier(n_neighbors=5),
         "SVC": SVC(kernel="rbf", probability=True),
     }
+
+    # Hyperparameter grids for tuning the best-selected model.
+    # Keys use the "model__" prefix because the estimator sits at that
+    # pipeline step. Empty/absent grids mean "no tunable params" for that model.
+    TUNING_GRIDS: Dict[str, Dict[str, List[Any]]] = {
+        "Ridge Regression": {"model__alpha": [0.1, 1.0, 10.0]},
+        "Lasso Regression": {"model__alpha": [0.001, 0.01, 0.1, 1.0]},
+        "Decision Tree": {"model__max_depth": [5, 10, 20, None]},
+        "Random Forest": {
+            "model__n_estimators": [50, 100, 200],
+            "model__max_depth": [None, 10, 20],
+            "model__min_samples_split": [2, 5],
+        },
+        "Gradient Boosting": {
+            "model__n_estimators": [50, 100, 200],
+            "model__learning_rate": [0.05, 0.1, 0.2],
+            "model__max_depth": [3, 5],
+        },
+        "Extra Trees": {
+            "model__n_estimators": [50, 100, 200],
+            "model__max_depth": [None, 10, 20],
+        },
+        "K-Neighbors": {"model__n_neighbors": [3, 5, 7, 11]},
+        "SVR": {"model__C": [0.1, 1.0, 10.0], "model__epsilon": [0.01, 0.1]},
+        "Logistic Regression": {"model__C": [0.01, 0.1, 1.0, 10.0]},
+        "SVC": {"model__C": [0.1, 1.0, 10.0], "model__kernel": ["linear", "rbf"]},
+    }
+
+    # Number of random combinations to try for "quick" tuning.
+    TUNING_QUICK_N_ITER = 8
+    # Inner CV folds used during hyperparameter search.
+    TUNING_CV_FOLDS = 3
 
     def __init__(
         self,
@@ -83,9 +119,13 @@ class ModelSelector:
         self.best_score: float = 0.0
         self.model_scores: Dict[str, float] = {}
         self.metrics: Dict[str, Any] = {}
+        self.confusion_matrix: Optional[List[List[int]]] = None
+        self.classification_report: Optional[Dict[str, Any]] = None
         self.pipeline: Optional[Pipeline] = None
         self.preprocessor: Optional[ColumnTransformer] = None
         self.feature_importance: Optional[pd.DataFrame] = None
+        self.tuning: Optional[str] = None
+        self.best_params: Optional[Dict[str, Any]] = None
 
     def _detect_task_type(self, y: pd.Series) -> str:
         """Auto-detect whether the task is regression or classification."""
@@ -190,17 +230,36 @@ class ModelSelector:
     def _get_metric(self):
         return "accuracy" if self.task_type == "classification" else "r2"
 
-    def _evaluate_models(self, X: pd.DataFrame, y: pd.Series) -> Dict[str, float]:
-        """Evaluate all candidate models with cross-validation."""
+    def _evaluate_models(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        progress_callback: Optional[Any] = None,
+        should_stop: Optional[Any] = None,
+    ) -> Dict[str, float]:
+        """Evaluate all candidate models with cross-validation.
+
+        Args:
+            X: Feature DataFrame.
+            y: Target Series.
+            progress_callback: Optional callback invoked after each model is
+                evaluated, receiving a dict with progress info.
+            should_stop: Optional callable returning True to cancel training.
+        """
         scores = {}
         models = self._get_models()
+        names = list(models.keys())
+        total = len(names)
         cv = (
             StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
             if self.task_type == "classification"
             else KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
         )
 
-        for name, model in models.items():
+        for i, name in enumerate(names, 1):
+            if should_stop and should_stop():
+                raise InterruptedError("Training cancelled by user.")
+            model = models[name]
             try:
                 pipeline = Pipeline([
                     ("preprocessor", self.preprocessor),
@@ -212,7 +271,16 @@ class ModelSelector:
                 ).mean()
                 scores[name] = score
             except Exception:
+                if should_stop and should_stop():
+                    raise InterruptedError("Training cancelled by user.")
                 continue
+            if progress_callback:
+                progress_callback({
+                    "current": i,
+                    "total": total,
+                    "model": name,
+                    "scores": dict(scores),
+                })
 
         return scores
 
@@ -244,12 +312,22 @@ class ModelSelector:
         except Exception:
             return None
 
-    def select(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def select(
+        self,
+        df: pd.DataFrame,
+        progress_callback: Optional[Any] = None,
+        should_stop: Optional[Any] = None,
+        tuning: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Automatically select the best model for the given data.
 
         Args:
             df: DataFrame containing features and target column.
+            progress_callback: Optional callback invoked as models are evaluated.
+            should_stop: Optional callable returning True to cancel training.
+            tuning: "off", "quick", or "full" — whether to hyperparameter-tune
+                the best-selected model. None behaves like "off".
 
         Returns:
             Dictionary with task type, best model, scores, and feature importance.
@@ -267,7 +345,7 @@ class ModelSelector:
         self.preprocessor = self._build_preprocessor()
 
         # Evaluate models
-        self.model_scores = self._evaluate_models(X, y)
+        self.model_scores = self._evaluate_models(X, y, progress_callback, should_stop)
 
         if not self.model_scores:
             raise ValueError("No models could be evaluated successfully.")
@@ -284,16 +362,29 @@ class ModelSelector:
         )
         self._last_X_test = X_test
 
-        best_model = self._get_models()[self.best_model_name]
-        self.pipeline = Pipeline([
-            ("preprocessor", self.preprocessor),
-            ("model", best_model),
-        ])
-        self.pipeline.fit(X_train, y_train)
+        self.tuning = tuning
+        self.best_params = None
+        if tuning in ("quick", "full"):
+            if should_stop and should_stop():
+                raise InterruptedError("Training cancelled by user.")
+            self.pipeline = self._tune_best_model(
+                X_train, y_train, progress_callback, should_stop
+            )
+        else:
+            best_model = self._get_models()[self.best_model_name]
+            self.pipeline = Pipeline([
+                ("preprocessor", self.preprocessor),
+                ("model", best_model),
+            ])
+            self.pipeline.fit(X_train, y_train)
 
         # Compute test metrics
         y_pred = self.pipeline.predict(X_test)
         self.metrics = self._compute_metrics(y_test, y_pred)
+
+        # Classification-specific evaluation (confusion matrix + per-class report)
+        if self.task_type == "classification":
+            self._compute_classification_eval(y_test, y_pred)
 
         # Feature importance
         self.feature_importance = self._get_feature_importance(
@@ -301,6 +392,94 @@ class ModelSelector:
         )
 
         return self.get_result_summary(was_encoded)
+
+    def _tune_best_model(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        progress_callback: Optional[Any] = None,
+        should_stop: Optional[Any] = None,
+    ) -> Pipeline:
+        """Run hyperparameter search on the best-selected model.
+
+        Returns a fitted pipeline whose model step has the best parameters.
+        """
+        grid = self.TUNING_GRIDS.get(self.best_model_name)
+        if not grid:
+            # Model has no tunable grid — fall back to a plain fitted pipeline.
+            base_model = self._get_models()[self.best_model_name]
+            pipeline = Pipeline([
+                ("preprocessor", self.preprocessor),
+                ("model", base_model),
+            ])
+            pipeline.fit(X_train, y_train)
+            return pipeline
+
+        if progress_callback:
+            progress_callback({
+                "phase": "tuning",
+                "current": 0,
+                "total": 0,
+                "model": self.best_model_name,
+                "scores": self.model_scores,
+            })
+
+        scorer = self._get_metric()
+        inner_cv = (
+            StratifiedKFold(
+                n_splits=self.TUNING_CV_FOLDS, shuffle=True, random_state=self.random_state
+            )
+            if self.task_type == "classification"
+            else KFold(n_splits=self.TUNING_CV_FOLDS, shuffle=True, random_state=self.random_state)
+        )
+
+        # Clone the preprocessor so the search gets a fresh, unfitted copy
+        # (self.preprocessor may already be bound to a fitted pipeline elsewhere).
+        base_model = self._get_models()[self.best_model_name]
+        est_pipeline = Pipeline([
+            ("preprocessor", clone(self.preprocessor)),
+            ("model", clone(base_model)),
+        ])
+
+        if self.tuning == "full":
+            search = GridSearchCV(
+                est_pipeline, grid, scoring=scorer,
+                cv=inner_cv, n_jobs=-1, refit=True,
+            )
+        else:
+            search = RandomizedSearchCV(
+                est_pipeline, grid, scoring=scorer,
+                cv=inner_cv, n_jobs=-1, refit=True,
+                n_iter=self.TUNING_QUICK_N_ITER, random_state=self.random_state,
+            )
+
+        search.fit(X_train, y_train)
+        self.best_params = dict(search.best_params_)
+
+        if progress_callback:
+            progress_callback({
+                "phase": "tuning",
+                "current": 1,
+                "total": 1,
+                "model": self.best_model_name,
+                "scores": self.model_scores,
+                "best_params": self.best_params,
+            })
+
+        return search.best_estimator_
+
+    def _compute_classification_eval(self, y_true: pd.Series, y_pred: np.ndarray) -> None:
+        """Compute and store confusion matrix and per-class classification report."""
+        try:
+            self.confusion_matrix = confusion_matrix(y_true, y_pred).tolist()
+        except Exception:
+            self.confusion_matrix = None
+        try:
+            self.classification_report = classification_report(
+                y_true, y_pred, output_dict=True, zero_division=0
+            )
+        except Exception:
+            self.classification_report = None
 
     def _compute_metrics(self, y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, Any]:
         """Compute evaluation metrics for the test set."""
@@ -350,6 +529,10 @@ class ModelSelector:
                 dict(enumerate(self.label_encoder.classes_)) if self.label_encoder else None
             ),
             "feature_importance": self.feature_importance,
+            "confusion_matrix": self.confusion_matrix,
+            "classification_report": self.classification_report,
+            "best_params": self.best_params,
+            "tuning": self.tuning,
         }
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -390,6 +573,10 @@ class ModelSelector:
                 self.feature_importance.to_dict(orient="list")
                 if self.feature_importance is not None else None
             ),
+            "confusion_matrix": self.confusion_matrix,
+            "classification_report": self.classification_report,
+            "best_params": self.best_params,
+            "tuning": self.tuning,
             "class_mapping": (
                 dict(enumerate(self.label_encoder.classes_)) if self.label_encoder else None
             ),
@@ -409,6 +596,10 @@ class ModelSelector:
         self.best_score = data["best_score"]
         self.metrics = data.get("metrics", {})
         self.label_encoder = data["label_encoder"]
+        self.confusion_matrix = data.get("confusion_matrix")
+        self.classification_report = data.get("classification_report")
+        self.best_params = data.get("best_params")
+        self.tuning = data.get("tuning")
 
         # Restore feature importance DataFrame
         fi_data = data.get("feature_importance")

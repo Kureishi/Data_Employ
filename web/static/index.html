@@ -78,6 +78,7 @@
                     </div>
                     <div id="data-info" class="info-box"></div>
                     <div id="data-preview" class="table-container"></div>
+                    <button id="btn-export-data" class="btn btn-outline btn-sm">Export Loaded Data (CSV)</button>
                 </div>
             </div>
 
@@ -108,6 +109,7 @@
                         <button id="btn-clear-preprocess" class="btn btn-danger">Clear</button>
                     </div>
                     <div id="preprocess-result" class="data-box"></div>
+                    <button id="btn-export-preprocessed" class="btn btn-outline btn-sm">Export Preprocessed Data (CSV)</button>
                 </div>
             </div>
 
@@ -121,6 +123,7 @@
                             <option value="correlations">Correlations</option>
                             <option value="insights">Column Insights</option>
                             <option value="target">Target Analysis</option>
+                            <option value="health">Data Health</option>
                         </select>
                         <input type="text" id="analyze-target" placeholder="Target column (optional)" />
                         <button class="btn btn-primary" id="btn-analyze">Analyze</button>
@@ -140,8 +143,14 @@
                             <option value="regression">Regression</option>
                             <option value="classification">Classification</option>
                         </select>
+                        <select id="train-tuning" title="Tune the best model's hyperparameters">
+                            <option value="off">No Tuning</option>
+                            <option value="quick" selected>Quick Tuning</option>
+                            <option value="full">Full Tuning</option>
+                        </select>
                         <button class="btn btn-primary" id="btn-train">Train Model</button>
                     </div>
+                    <div id="train-progress" class="train-progress"></div>
                     <div id="train-result" class="data-box"></div>
                 </div>
                 <div class="card">
@@ -172,6 +181,22 @@
                         <button class="btn btn-primary" id="btn-predict">Predict</button>
                     </div>
                     <div id="predict-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Batch Predictions</h2>
+                    <div class="form-row">
+                        <select id="predict-table-select">
+                            <option value="">Select a table...</option>
+                        </select>
+                        <button class="btn btn-primary" id="btn-predict-table">Predict Table</button>
+                        <button class="btn btn-outline" id="btn-predict-current">Predict Loaded Data</button>
+                    </div>
+                    <div class="form-row">
+                        <input type="file" id="predict-csv" accept=".csv" />
+                        <button class="btn btn-primary" id="btn-predict-csv">Upload CSV &amp; Predict</button>
+                        <button class="btn btn-outline" id="btn-export-predictions">Export Predictions (CSV)</button>
+                    </div>
+                    <div id="batch-predict-result" class="data-box"></div>
                 </div>
             </div>
 

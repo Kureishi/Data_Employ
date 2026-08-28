@@ -209,6 +209,8 @@ class MLAgent:
             return self.analyzer.get_column_insights()
         elif analysis_type == "target":
             return self.analyzer.get_target_analysis()
+        elif analysis_type == "health":
+            return self.analyzer.get_data_health_report()
         else:
             raise ValueError(f"Unknown analysis type: {analysis_type}")
 
@@ -219,6 +221,9 @@ class MLAgent:
         target_column: str,
         task_type: Optional[str] = None,
         table_name: Optional[str] = None,
+        progress_callback: Optional[Any] = None,
+        should_stop: Optional[Any] = None,
+        tuning: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Train the best model for the given target column.
@@ -227,6 +232,9 @@ class MLAgent:
             target_column: Column to predict.
             task_type: "regression", "classification", or None for auto-detection.
             table_name: Table to use (if not already loaded).
+            progress_callback: Optional callback invoked as models are evaluated.
+            should_stop: Optional callable returning True to cancel training.
+            tuning: "off", "quick", or "full" — hyperparameter-tune the best model.
 
         Returns:
             Model selection results with best model and metrics.
@@ -249,7 +257,12 @@ class MLAgent:
             random_state=self.random_state,
         )
 
-        results = self.model_selector.select(self.current_df)
+        results = self.model_selector.select(
+            self.current_df,
+            progress_callback=progress_callback,
+            should_stop=should_stop,
+            tuning=tuning,
+        )
         self.predictor = Predictor(self.model_selector)
         return results
 

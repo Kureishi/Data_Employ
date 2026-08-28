@@ -11,6 +11,7 @@ import argparse
 import os
 import sys
 import tempfile
+import threading
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -29,6 +30,10 @@ app = Flask(
 
 # Global agent state
 AGENT: Optional[MLAgent] = None
+
+# Async training-job registry (id -> job dict)
+TRAIN_JOBS: Dict[str, Dict[str, Any]] = {}
+TRAIN_LOCK = threading.Lock()
 
 # Upload directory for database files
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ml_agent_uploads")
@@ -413,44 +418,132 @@ def api_analyze():
 # ========== Training ==========
 
 
+def _serialize_training(results: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a JSON-serializable representation of training results."""
+    return {
+        "task_type": results["task_type"],
+        "target_column": results["target_column"],
+        "best_model": results["best_model"],
+        "best_cv_score": results["best_cv_score"],
+        "model_scores": results["model_scores"],
+        "test_metrics": _jsonable(results["test_metrics"]),
+        "feature_columns": results["feature_columns"],
+        "numeric_columns": results["numeric_columns"],
+        "categorical_columns": results["categorical_columns"],
+        "target_was_encoded": results.get("target_was_encoded", False),
+        "class_mapping": results.get("class_mapping"),
+        "feature_importance": (
+            _jsonable(results["feature_importance"])
+            if results.get("feature_importance") is not None else None
+        ),
+        "confusion_matrix": results.get("confusion_matrix"),
+        "classification_report": results.get("classification_report"),
+        "best_params": results.get("best_params"),
+        "tuning": results.get("tuning"),
+    }
+
+
 @app.route("/api/train", methods=["POST"])
 def api_train():
+    """Start an asynchronous training job and return its id immediately."""
     try:
         agent = _get_agent()
         data = request.get_json(silent=True) or {}
         target = data.get("target_column")
         task_type = data.get("task_type")
         table = data.get("table_name")
+        tuning = data.get("tuning") if data.get("tuning") in ("off", "quick", "full") else None
 
         if not target:
             return _error("target_column is required.")
 
-        results = agent.train(
-            target_column=target,
-            task_type=task_type,
-            table_name=table,
-        )
+        with TRAIN_LOCK:
+            for job in TRAIN_JOBS.values():
+                if job.get("status") in ("running", "cancelling"):
+                    return _error("A training job is already running. Cancel it first or wait.")
 
-        # Build serializable results
-        serializable = {
-            "task_type": results["task_type"],
-            "target_column": results["target_column"],
-            "best_model": results["best_model"],
-            "best_cv_score": results["best_cv_score"],
-            "model_scores": results["model_scores"],
-            "test_metrics": _jsonable(results["test_metrics"]),
-            "feature_columns": results["feature_columns"],
-            "numeric_columns": results["numeric_columns"],
-            "categorical_columns": results["categorical_columns"],
-            "target_was_encoded": results.get("target_was_encoded", False),
-            "class_mapping": results.get("class_mapping"),
-            "feature_importance": (
-                _jsonable(results["feature_importance"])
-                if results.get("feature_importance") is not None else None
-            ),
+        job_id = f"train_{len(TRAIN_JOBS) + 1}"
+        stop_flag = [False]
+        job: Dict[str, Any] = {
+            "id": job_id,
+            "status": "running",
+            "target": target,
+            "progress": {"current": 0, "total": 0, "model": "", "scores": {}},
+            "error": None,
+            "training": None,
         }
 
-        return _success(training=serializable)
+        def progress_cb(info: Dict[str, Any]) -> None:
+            job["progress"] = info
+            with TRAIN_LOCK:
+                pass
+
+        def should_stop() -> bool:
+            return bool(stop_flag[0])
+
+        def worker() -> None:
+            try:
+                results = agent.train(
+                    target_column=target,
+                    task_type=task_type,
+                    table_name=table,
+                    progress_callback=progress_cb,
+                    should_stop=should_stop,
+                    tuning=tuning,
+                )
+                job["status"] = "done"
+                job["training"] = _serialize_training(results)
+                job["progress"] = {
+                    "current": job["progress"]["total"] or 1,
+                    "total": job["progress"]["total"] or 1,
+                    "model": job["progress"].get("model", ""),
+                    "scores": job["progress"].get("scores", {}),
+                }
+            except InterruptedError as e:
+                job["status"] = "cancelled"
+                job["error"] = str(e)
+            except Exception as e:
+                job["status"] = "error"
+                job["error"] = str(e)
+
+        with TRAIN_LOCK:
+            TRAIN_JOBS[job_id] = job
+        threading.Thread(target=worker, daemon=True).start()
+
+        return _success(job_id=job_id, status=job["status"])
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/train/status/<job_id>", methods=["GET"])
+def api_train_status(job_id: str):
+    try:
+        with TRAIN_LOCK:
+            job = TRAIN_JOBS.get(job_id)
+        if job is None:
+            return _error("Job not found.", status=404)
+        return jsonify({
+            "job_id": job_id,
+            "status": job["status"],
+            "target": job["target"],
+            "progress": job["progress"],
+            "error": job["error"],
+            "training": job["training"],
+        })
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/train/cancel/<job_id>", methods=["POST"])
+def api_train_cancel(job_id: str):
+    try:
+        with TRAIN_LOCK:
+            job = TRAIN_JOBS.get(job_id)
+            if job is not None and job["status"] == "running":
+                job["status"] = "cancelling"
+        if job is None:
+            return _error("Job not found.", status=404)
+        return _success(status=job["status"], message="Cancellation requested. Stopping after the current model…")
     except Exception as e:
         return _error(str(e))
 
@@ -483,6 +576,100 @@ def api_predict():
             predictions=_jsonable(predictions),
             columns=list(predictions.columns),
             rows=len(predictions),
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+# ---------- Batch prediction ----------
+
+
+@app.route("/api/predict/table", methods=["POST"])
+def api_predict_table():
+    """Run the trained model on every row of a database table."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        table = data.get("table")
+        limit = data.get("limit")
+        if not table:
+            return _error("table is required.")
+
+        df = agent.load_table(table, limit=limit)
+        predictions = agent.predict(df)
+        return _success(
+            predictions=_jsonable(predictions),
+            columns=list(predictions.columns),
+            rows=len(predictions),
+            source=f"table:{table}",
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/predict/current", methods=["POST"])
+def api_predict_current():
+    """Run the trained model on the currently loaded dataset."""
+    try:
+        agent = _get_agent()
+        if agent.current_df is None:
+            return _error("No data loaded. Load a table or query first.")
+        predictions = agent.predict(agent.current_df)
+        return _success(
+            predictions=_jsonable(predictions),
+            columns=list(predictions.columns),
+            rows=len(predictions),
+            source="current",
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/predict/upload", methods=["POST"])
+def api_predict_upload():
+    """Upload a CSV of feature rows and run the trained model on them."""
+    try:
+        agent = _get_agent()
+        if "file" not in request.files:
+            return _error("No file uploaded. Use multipart/form-data with a 'file' field.")
+        file = request.files["file"]
+        if file.filename == "":
+            return _error("No file selected.")
+        if not os.path.splitext(file.filename)[1].lower() in (".csv", ".txt"):
+            return _error("Please upload a .csv file.")
+
+        df = pd.read_csv(file)
+        if df.empty:
+            return _error("Uploaded CSV is empty.")
+
+        predictions = agent.predict(df)
+        return _success(
+            predictions=_jsonable(predictions),
+            columns=list(predictions.columns),
+            rows=len(predictions),
+            source=f"csv:{file.filename}",
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+# ---------- Export ----------
+
+
+@app.route("/api/export/csv", methods=["GET"])
+def api_export_csv():
+    """Download the currently loaded dataset as CSV."""
+    try:
+        agent = _get_agent()
+        if agent.current_df is None:
+            return _error("No data loaded. Load a table or query first.")
+        csv_str = agent.current_df.to_csv(index=False)
+        return Response(
+            csv_str,
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": "attachment; filename=exported_data.csv"
+            },
         )
     except Exception as e:
         return _error(str(e))
@@ -718,7 +905,7 @@ def main() -> None:
             print(f"Failed to connect to database: {e}", file=sys.stderr)
 
     print(f"ML Agent Web API running at http://{args.host}:{args.port}", file=sys.stderr)
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
 
 
 if __name__ == "__main__":

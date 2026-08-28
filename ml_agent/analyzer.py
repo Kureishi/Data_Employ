@@ -118,6 +118,85 @@ class DataAnalyzer:
 
         return result
 
+    def get_data_health_report(self) -> Dict[str, Any]:
+        """Produce a data-quality / health report with warnings and per-column stats."""
+        df = self.df
+        report: Dict[str, Any] = {
+            "rows": int(len(df)),
+            "columns": int(df.shape[1]),
+            "missing_total": int(df.isna().sum().sum()),
+            "missing_cells_pct": round(float(df.isna().mean().mean() * 100), 2),
+            "duplicate_rows": int(df.duplicated().sum()),
+            "duplicate_pct": round(float(df.duplicated().mean() * 100), 2),
+            "column_health": [],
+            "warnings": [],
+            "class_balance": None,
+        }
+
+        for col in df.columns:
+            s = df[col]
+            missing = int(s.isna().sum())
+            missing_pct = round(float(s.isna().mean() * 100), 2)
+            unique = int(s.nunique())
+            info = {
+                "column": col,
+                "dtype": str(s.dtype),
+                "null_count": missing,
+                "null_pct": missing_pct,
+                "unique_values": unique,
+                "cardinality": (round(unique / len(s), 4) if len(s) else 0),
+            }
+
+            if not pd.api.types.is_numeric_dtype(s.dtype):
+                info["top_values"] = s.value_counts().head(5).to_dict()
+
+            # Warn on high missing
+            if missing > 0:
+                report["warnings"].append(
+                    f"Column '{col}' has {missing} missing value(s) ({missing_pct}%)."
+                )
+            # Warn on high cardinality object column
+            if (not pd.api.types.is_numeric_dtype(s.dtype)) and unique > 50:
+                report["warnings"].append(
+                    f"Column '{col}' is high-cardinality ({unique} unique values) — check if it's an ID."
+                )
+            # Constant column
+            if unique == 1:
+                report["warnings"].append(
+                    f"Column '{col}' is constant — it provides no predictive signal."
+                )
+
+            report["column_health"].append(info)
+
+        # Class balance for a categorical target
+        if self.target_column and self.target_column in df.columns:
+            target = df[self.target_column]
+            if not pd.api.types.is_numeric_dtype(target.dtype) or (
+                pd.api.types.is_numeric_dtype(target.dtype) and target.nunique() <= 10
+            ):
+                counts = target.value_counts()
+                proportions = (counts / len(target)).round(4).to_dict()
+                report["class_balance"] = {
+                    str(k): {"count": int(v), "proportion": float(proportions.get(k, 0))}
+                    for k, v in counts.items()
+                }
+                if counts.min() < len(target) * 0.1 and counts.max() > 0:
+                    report["warnings"].append(
+                        "Imbalanced target detected — consider using class weighting or stratified sampling."
+                    )
+
+        if report["missing_cells_pct"] > 5:
+            report["warnings"].append(
+                f"Overall missing-cell rate is {report['missing_cells_pct']}% — consider imputation."
+            )
+        if report["duplicate_rows"] > 0:
+            report["warnings"].append(
+                f"Found {report['duplicate_rows']} duplicate rows ({report['duplicate_pct']}%)."
+            )
+
+        report["status"] = "warning" if report["warnings"] else "ok"
+        return report
+
     def get_summary_report(self) -> Dict[str, Any]:
         """Get a comprehensive summary report."""
         return {

@@ -205,6 +205,188 @@ function populateTableSelect(tables) {
     const select = document.getElementById('data-table-select');
     select.innerHTML = '<option value="">Select a table...</option>' +
         tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    const predictSelect = document.getElementById('predict-table-select');
+    if (predictSelect) {
+        const cur = predictSelect.value;
+        predictSelect.innerHTML = '<option value="">Select a table...</option>' +
+            tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+        if (cur) predictSelect.value = cur;
+    }
+}
+
+// ============ CSV / chart helpers ============
+
+function downloadCsv(filename, rows) {
+    if (!rows || rows.length === 0) {
+        showToast('Nothing to export.', 'warning');
+        return;
+    }
+    const cols = Object.keys(rows[0]);
+    const esc = v => {
+        if (v === null || v === undefined) return '';
+        const s = String(v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = [cols.join(',')];
+    for (const r of rows) {
+        lines.push(cols.map(c => esc(r[c])).join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function svgBarChart(items, opts) {
+    opts = opts || {};
+    if (!items || items.length === 0) return '';
+    const width = opts.width || 520;
+    const barH = opts.barH || 18;
+    const gap = 4;
+    const maxVal = Math.max(...items.map(i => Math.abs(i.value) || 0)) || 1;
+    const padding = { top: 6, bottom: 6 };
+    const height = items.length * (barH + gap) + padding.top + padding.bottom;
+    const labelW = 130;
+    const valueW = 46;
+    const plotW = width - labelW - valueW;
+    const color = opts.color || '#4f46e5';
+
+    let bars = '';
+    items.forEach((it, idx) => {
+        const w = (Math.abs(it.value) / maxVal) * plotW;
+        const y = padding.top + idx * (barH + gap);
+        const isNeg = it.value < 0;
+        const x = labelW + (isNeg ? plotW - w : 0);
+        const label = String(it.label);
+        const disp = (it.label || '').length > 18 ? it.label.slice(0, 16) + '…' : it.label;
+        bars += `<text x="${labelW - 6}" y="${y + barH - 4}" text-anchor="end" font-size="11" fill="#6b7280">${escapeHtml(disp)}</text>`;
+        bars += `<rect x="${x}" y="${y}" width="${Math.max(w, it.value === 0 ? 0 : 2)}" height="${barH}" fill="${color}" rx="2"></rect>`;
+        bars += `<text x="${x + Math.max(w, 2) + 4}" y="${y + barH - 4}" font-size="11" fill="#1f2937">${formatJson(it.value)}</text>`;
+    });
+
+    return `<div class="chart"><div class="chart-title">${escapeHtml(opts.title || '')}</div>
+            <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${bars}</svg></div>`;
+}
+
+function renderConfusionMatrix(cm, classLabels) {
+    if (!cm || !cm.length) return '';
+    const n = cm.length;
+    const labels = classLabels || cm.map((_, i) => i);
+    let html = '<h4>Confusion Matrix</h4><table class="cm-table"><tr><th></th>';
+    for (const l of labels) html += `<th>Pred ${escapeHtml(String(l))}</th>`;
+    html += '</tr>';
+    for (let i = 0; i < n; i++) {
+        html += `<tr><th>Act ${escapeHtml(String(labels[i]))}</th>`;
+        for (let j = 0; j < n; j++) {
+            html += `<td>${cm[i][j]}</td>`;
+        }
+        html += '</tr>';
+    }
+    html += '</table>';
+    return html;
+}
+
+function renderClassificationReport(report, classMapping) {
+    if (!report) return '';
+    const classes = Object.keys(report).filter(k => !['accuracy', 'macro avg', 'weighted avg'].includes(k));
+    if (classes.length === 0) return '';
+    const map = v => (classMapping && classMapping[v] !== undefined) ? classMapping[v] : v;
+    let html = '<h4>Classification Report</h4><table class="cm-table"><tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Support</th></tr>';
+    for (const c of classes) {
+        const row = report[c];
+        html += `<tr><td>${escapeHtml(String(map(c)))}</td><td>${formatJson(row.precision)}</td><td>${formatJson(row.recall)}</td><td>${formatJson(row['f1-score'])}</td><td>${row.support}</td></tr>`;
+    }
+    html += '</table>';
+    return html;
+}
+
+function renderColumnHealthTable(cols) {
+    if (!cols || !cols.length) return '';
+    let html = '<div class="table-container"><table class="dataframe"><thead><tr>' +
+        '<th>Column</th><th>Type</th><th>Null</th><th>Null %</th><th>Unique</th><th>Cardinality</th></tr></thead><tbody>';
+    for (const c of cols) {
+        html += `<tr><td>${escapeHtml(c.column)}</td><td>${escapeHtml(c.dtype)}</td><td>${c.null_count}</td><td>${c.null_pct}%</td><td>${c.unique_values}</td><td>${c.cardinality}</td></tr>`;
+    }
+    html += '</tbody></table></div>';
+    return html;
+}
+
+// ============ Render helpers for training / health ============
+
+function classLabelsFromMapping(m) {
+    if (!m) return null;
+    return Object.keys(m).sort((a, b) => Number(a) - Number(b)).map(k => m[k]);
+}
+
+function renderTrainResults(t) {
+    if (!t) return '';
+    let html = `<strong>Task:</strong> ${escapeHtml(t.task_type)}<br>`;
+    html += `<strong>Best Model:</strong> ${escapeHtml(t.best_model)}<br>`;
+    html += `<strong>CV Score:</strong> ${formatJson(t.best_cv_score)}<br>`;
+    html += renderMetrics(t.test_metrics);
+
+    if (t.tuning && t.tuning !== 'off' && t.best_params && Object.keys(t.best_params).length) {
+        const clean = {};
+        for (const [k, v] of Object.entries(t.best_params)) {
+            const key = k.startsWith('model__') ? k.slice('model__'.length) : k;
+            clean[key] = (v === null) ? 'None' : v;
+        }
+        html += '<br><strong>Tuned Parameters (best):</strong><br>';
+        html += '<code>' + escapeHtml(JSON.stringify(clean)) + '</code><br>';
+    }
+
+    if (t.model_scores && Object.keys(t.model_scores).length) {
+        const items = Object.entries(t.model_scores)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => ({ label: k, value: v }));
+        html += svgBarChart(items, { title: 'Candidate Model Scores', color: '#10b981' });
+    }
+
+    if (t.feature_importance && t.feature_importance.length) {
+        const items = t.feature_importance.slice(0, 10).map(fi => ({ label: fi.feature, value: fi.importance }));
+        html += svgBarChart(items, { title: 'Top Feature Importances', color: '#4f46e5' });
+    }
+
+    const classLabels = classLabelsFromMapping(t.class_mapping);
+    html += renderConfusionMatrix(t.confusion_matrix, classLabels);
+    html += renderClassificationReport(t.classification_report, t.class_mapping);
+    return html;
+}
+
+function renderHealthReport(h) {
+    if (!h) return '';
+    let html = '<div class="health-summary">';
+    html += `<div class="health-card"><div class="cell-label">Rows</div><div class="cell-value">${h.rows}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Columns</div><div class="cell-value">${h.columns}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Missing</div><div class="cell-value">${h.missing_cells_pct}%</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Duplicates</div><div class="cell-value">${h.duplicate_pct}%</div></div>`;
+    html += '</div>';
+
+    const nullItems = (h.column_health || [])
+        .map(c => ({ label: c.column, value: c.null_count }))
+        .filter(i => i.value > 0);
+    if (nullItems.length) {
+        html += svgBarChart(nullItems, { title: 'Missing Values by Column', color: '#ef4444' });
+    }
+
+    if (h.warnings && h.warnings.length) {
+        html += '<h4>Warnings</h4><ul class="warning-list">' + h.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
+    } else {
+        html += '<p class="hint">No data quality warnings detected. 🎉</p>';
+    }
+
+    html += '<h4>Column Health</h4>' + renderColumnHealthTable(h.column_health);
+
+    if (h.class_balance && Object.keys(h.class_balance).length) {
+        const items = Object.entries(h.class_balance).map(([k, v]) => ({ label: k, value: v.count }));
+        html += svgBarChart(items, { title: 'Class Balance (counts)', color: '#f59e0b' });
+    }
+    return html;
 }
 
 // ============ Event handlers ============
@@ -458,7 +640,12 @@ document.getElementById('btn-analyze').addEventListener('click', async (e) => {
     const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/analyze', 'POST', { type, target_column: target });
-        document.getElementById('analyze-result').innerHTML = renderJson(res.analysis);
+        const out = document.getElementById('analyze-result');
+        if (type === 'health') {
+            out.innerHTML = renderHealthReport(res.analysis);
+        } else {
+            out.innerHTML = renderJson(res.analysis);
+        }
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
@@ -466,44 +653,145 @@ document.getElementById('btn-analyze').addEventListener('click', async (e) => {
     }
 });
 
-// ============ Training ============
+// ============ Training (async job with progress + cancel) ============
 
-document.getElementById('btn-train').addEventListener('click', async (e) => {
+let trainPoller = null;
+
+function renderTrainProgress(status, jobId) {
+    const box = document.getElementById('train-progress');
+    const p = status.progress || {};
+    const total = p.total || 1;
+    const pct = Math.round(((p.current || 0) / total) * 100);
+    const cancelled = status.status === 'cancelled';
+    const done = status.status === 'done' || status.status === 'error' || cancelled;
+    const tuning = p.phase === 'tuning';
+
+    let html = '<div class="progress-track">';
+    if (tuning && p.current === 0) {
+        html += '<div class="progress-fill tuning" style="width:100%"></div>';
+    } else {
+        html += '<div class="progress-fill" style="width:' + pct + '%"></div>';
+    }
+    html += '</div>';
+
+    let label;
+    if (cancelled) label = 'Training cancelled.';
+    else if (tuning) label = `Tuning ${escapeHtml(p.model || 'best model')} hyperparameters…`;
+    else label = 'Evaluating ' + pct + '% — ' + escapeHtml(p.model || 'starting…');
+    html += '<p class="progress-label">' + label + '</p>';
+
+    if (tuning && p.best_params && Object.keys(p.best_params).length) {
+        html += '<p class="progress-label">Best params: <code>' + escapeHtml(JSON.stringify(p.best_params)) + '</code></p>';
+    }
+
+    if (p.scores && Object.keys(p.scores).length && !tuning) {
+        html += '<div class="progress-scores">' + Object.entries(p.scores)
+            .map(([k, v]) => `<span class="progress-score">${escapeHtml(k)}: ${formatJson(v)}</span>`)
+            .join('') + '</div>';
+    }
+
+    if (status.status === 'error') {
+        html += `<p class="progress-label" style="color:var(--danger)">Error: ${escapeHtml(status.error || 'unknown')}</p>`;
+    }
+
+    if (!done) {
+        html += `<button class="btn btn-danger btn-sm" id="btn-cancel-train">Cancel Training</button>`;
+    }
+    box.innerHTML = html;
+
+    const cancelBtn = box.querySelector('#btn-cancel-train');
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', async () => {
+            cancelBtn.disabled = true;
+            cancelBtn.textContent = 'Cancelling…';
+            try {
+                await api(`/api/train/cancel/${jobId}`, 'POST');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+    }
+}
+
+async function startTraining(target, taskType, tuning) {
+    const _btn = document.getElementById('btn-train');
+    setLoading(_btn, true);
+    document.getElementById('train-result').innerHTML = '';
+    const progressBox = document.getElementById('train-progress');
+    progressBox.innerHTML = '<div class="progress-track"><div class="progress-fill" style="width:0%"></div></div><p class="progress-label">Starting training…</p>';
+
+    let jobId = null;
+    try {
+        const res = await api('/api/train', 'POST', { target_column: target, task_type: taskType, tuning });
+        jobId = res.job_id;
+    } catch (err) {
+        setLoading(_btn, false);
+        progressBox.innerHTML = '';
+        showToast(err.message, 'error');
+        return;
+    }
+
+    if (trainPoller) clearInterval(trainPoller);
+    trainPoller = setInterval(async () => {
+        let status;
+        try {
+            const r = await fetch(`/api/train/status/${jobId}`);
+            status = await r.json();
+        } catch (err) {
+            clearInterval(trainPoller);
+            trainPoller = null;
+            setLoading(_btn, false);
+            showToast(err.message, 'error');
+            return;
+        }
+
+        renderTrainProgress(status, jobId);
+
+        if (status.status === 'done') {
+            clearInterval(trainPoller);
+            trainPoller = null;
+            setLoading(_btn, false);
+            document.getElementById('train-result').innerHTML = renderTrainResults(status.training);
+            showToast(`Trained ${status.training.best_model} (${status.training.task_type})`, 'success');
+            await refreshState();
+        } else if (status.status === 'error') {
+            clearInterval(trainPoller);
+            trainPoller = null;
+            setLoading(_btn, false);
+            showToast(status.error || 'Training failed.', 'error');
+        } else if (status.status === 'cancelled') {
+            clearInterval(trainPoller);
+            trainPoller = null;
+            setLoading(_btn, false);
+            showToast('Training cancelled.', 'warning');
+        }
+    }, 700);
+}
+
+document.getElementById('btn-train').addEventListener('click', () => {
     const target = document.getElementById('train-target').value.trim();
     const taskType = document.getElementById('train-task-type').value || null;
+    const tuning = document.getElementById('train-tuning').value || 'off';
     if (!target) {
         showToast('Please enter a target column.', 'error');
         return;
     }
-    const _btn = e.currentTarget; setLoading(_btn, true);
-    try {
-        const res = await api('/api/train', 'POST', { target_column: target, task_type: taskType });
-        const t = res.training;
-        let html = `<strong>Task:</strong> ${escapeHtml(t.task_type)}<br>`;
-        html += `<strong>Best Model:</strong> ${escapeHtml(t.best_model)}<br>`;
-        html += `<strong>CV Score:</strong> ${formatJson(t.best_cv_score)}<br>`;
-        html += renderMetrics(t.test_metrics);
-        html += '<br><strong>Model Scores:</strong><br>';
-        for (const [name, score] of Object.entries(t.model_scores)) {
-            html += `&nbsp;&nbsp;${escapeHtml(name)}: ${formatJson(score)}<br>`;
-        }
-        if (t.feature_importance && t.feature_importance.length > 0) {
-            html += '<br><strong>Top Features:</strong><br>';
-            for (const fi of t.feature_importance.slice(0, 10)) {
-                html += `&nbsp;&nbsp;${escapeHtml(fi.feature)}: ${formatJson(fi.importance)}<br>`;
-            }
-        }
-        document.getElementById('train-result').innerHTML = html;
-        showToast(`Trained ${t.best_model} (${t.task_type})`, 'success');
-        await refreshState();
-    } catch (err) {
-        showToast(err.message, 'error');
-    } finally {
-        setLoading(_btn, false);
-    }
+    startTraining(target, taskType, tuning);
 });
 
 // ============ Prediction ============
+
+let lastPredictions = null;
+let lastPredictColumns = null;
+
+function renderPredictions(res, containerId, filenameBase) {
+    lastPredictions = res.predictions;
+    lastPredictColumns = res.columns;
+    const box = document.getElementById(containerId);
+    box.innerHTML = renderTable(res.predictions, res.columns) +
+        `<p class="hint">${res.rows} prediction(s). Use "Export Predictions (CSV)" below to download.</p>`;
+    window._lastPredictFilename = filenameBase;
+}
 
 document.getElementById('btn-predict').addEventListener('click', async (e) => {
     const dataText = document.getElementById('predict-data').value.trim();
@@ -521,13 +809,88 @@ document.getElementById('btn-predict').addEventListener('click', async (e) => {
     const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/predict', 'POST', { data });
-        document.getElementById('predict-result').innerHTML = renderTable(res.predictions, res.columns);
+        renderPredictions(res, 'predict-result', 'predictions.csv');
         showToast(`Made ${res.rows} prediction(s)`, 'success');
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
         setLoading(_btn, false);
     }
+});
+
+// ---------- Batch prediction ----------
+
+document.getElementById('btn-predict-table').addEventListener('click', async (e) => {
+    const table = document.getElementById('predict-table-select').value;
+    if (!table) {
+        showToast('Please select a table.', 'error');
+        return;
+    }
+    const _btn = e.currentTarget; setLoading(_btn, true);
+    try {
+        const res = await api('/api/predict/table', 'POST', { table });
+        renderPredictions(res, 'batch-predict-result', `${table}_predictions.csv`);
+        showToast(`Predicted ${res.rows} rows from ${table}`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
+    }
+});
+
+document.getElementById('btn-predict-current').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
+    try {
+        const res = await api('/api/predict/current', 'POST');
+        renderPredictions(res, 'batch-predict-result', 'loaded_data_predictions.csv');
+        showToast(`Predicted ${res.rows} rows from loaded data`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
+    }
+});
+
+document.getElementById('btn-predict-csv').addEventListener('click', async (e) => {
+    const fileInput = document.getElementById('predict-csv');
+    const file = fileInput.files[0];
+    if (!file) {
+        showToast('Please select a CSV file.', 'error');
+        return;
+    }
+    const _btn = e.currentTarget; setLoading(_btn, true);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+        const res = await fetch('/api/predict/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok && data.error) throw new Error(data.error);
+        renderPredictions(data, 'batch-predict-result', `${file.name.replace(/\.csv$/i, '')}_predictions.csv`);
+        fileInput.value = '';
+        showToast(`Predicted ${data.rows} rows from CSV`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_btn, false);
+    }
+});
+
+document.getElementById('btn-export-predictions').addEventListener('click', () => {
+    if (!lastPredictions) {
+        showToast('No predictions to export yet.', 'warning');
+        return;
+    }
+    downloadCsv(window._lastPredictFilename || 'predictions.csv', lastPredictions);
+});
+
+// ---------- Export loaded / preprocessed data ----------
+
+document.getElementById('btn-export-data').addEventListener('click', () => {
+    window.location.href = '/api/export/csv';
+});
+
+document.getElementById('btn-export-preprocessed').addEventListener('click', () => {
+    window.location.href = '/api/export/csv';
 });
 
 // ============ LLM ============
