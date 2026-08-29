@@ -112,6 +112,12 @@ Examples:
         help="Task type (auto-detected if not specified)",
     )
     parser.add_argument(
+        "--tuning",
+        choices=["off", "quick", "full"],
+        default=None,
+        help="Hyperparameter-tune the best model: 'off', 'quick', or 'full' (default: off)",
+    )
+    parser.add_argument(
         "--test-size",
         type=float,
         default=0.2,
@@ -254,7 +260,7 @@ Examples:
     )
     parser.add_argument(
         "--analyze",
-        choices=["summary", "correlations", "insights", "target"],
+        choices=["summary", "correlations", "insights", "target", "health"],
         default=None,
         help="Perform data analysis on the loaded dataset",
     )
@@ -899,6 +905,7 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             results = agent.train(
                 target_column=args.target,
                 task_type=args.task_type,
+                tuning=args.tuning,
             )
             if args.json:
                 # Convert feature_importance to serializable

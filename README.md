@@ -7,15 +7,20 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **SQL Database Processing**: Connects to SQLite, PostgreSQL, MySQL, and other SQL databases via SQLAlchemy
 - **Multi-Table Support**: Discovers all tables, schemas, primary/foreign keys, and relationships
 - **Automatic Model Selection**: Evaluates 9 regression models and 7 classification models using cross-validation to find the best performer
+- **Hyperparameter Tuning**: Optionally tune the best-selected model with `GridSearchCV` (Full) or `RandomizedSearchCV` (Quick) — Off / Quick / Full
 - **Task Type Auto-Detection**: Automatically determines if the task is regression or classification based on data characteristics
 - **Intelligent Feature Engineering**: 
   - Auto-detects and removes ID columns (auto-increment primary keys)
   - Handles categorical variables with one-hot encoding
   - Imputes missing values
   - Scales numeric features
-- **Comprehensive Analysis**: Statistical summaries, correlations, column insights, and target analysis
-- **Prediction Engine**: Make predictions on new data (single records or batches)
-- **Model Persistence**: Save and load trained models
+- **Comprehensive Analysis**: Statistical summaries, correlations, column insights, target analysis, and a data-quality / health report
+- **Classification Diagnostics**: Confusion matrix and per-class precision/recall/F1 report for classification tasks
+- **Prediction Engine**: Make predictions on new data — single records, JSON batches, DB tables, loaded datasets, or uploaded CSVs
+- **Model Persistence**: Save and load trained models (portable `.joblib`), plus browser download/upload
+- **Export to CSV**: Download the loaded/preprocessed data, batches, or prediction results
+- **Asynchronous Training**: Live progress bar with per-model scores and a Cancel button (training runs in a background job)
+- **Inline Charts**: Dependency-free SVG bar charts for model scores, feature importances, and class distributions
 - **Feature Importance**: Identifies which features most influence predictions
 - **Data Preprocessing**: Drop/fill missing values, filter rows, scale features, encode categories, and create new features
 - **Local LLM Advisor (LM Studio)**: Natural-language → SQL, target column recommendations, preprocessing suggestions, model-result interpretation, and prediction narratives — all running locally with a heuristic fallback when the server is offline
@@ -74,6 +79,12 @@ python main.py -db sample_company.db -t employees -y salary --analyze target
 
 # Train a model (auto-detect task type)
 python main.py -db sample_company.db -t employees -y salary
+
+# Train and hyperparameter-tune the best model (quick / full / off)
+python main.py -db sample_company.db -t employees -y salary --tuning quick
+
+# Run a data-quality / health report
+python main.py -db sample_company.db -t employees --analyze health
 
 # Train a classification model explicitly
 python main.py -db sample_company.db -t employees -y education_level --task-type classification
@@ -149,6 +160,10 @@ analysis = agent.analyze(target_column="salary", analysis_type="summary")
 # Train the best model automatically
 results = agent.train(target_column="salary")
 print(agent.format_results(results))
+
+# Train with hyperparameter tuning of the best model ("off" / "quick" / "full")
+results = agent.train(target_column="salary", tuning="quick")
+print("Best params:", results.get("best_params"))
 
 # Make predictions
 new_employee = {
@@ -288,6 +303,15 @@ The agent automatically evaluates these models and selects the best one:
 - K-Neighbors
 - SVC
 
+### Parameter Tuning
+
+After the best model is selected, you can optionally tune its hyperparameters. Two levels are offered:
+
+- **Quick** — `RandomizedSearchCV` samples a bounded number (`n_iter=8`) of random hyperparameter combinations via 3-fold CV. Fast and a great default.
+- **Full** — `GridSearchCV` exhaustively searches every combination in the grid via 3-fold CV. More thorough, but slower on large datasets.
+
+Tuning is controlled per call: `agent.train(..., tuning="quick")`, the CLI `--tuning quick`, or the web UI's **Tuning** dropdown (No / Quick / Full). The chosen best parameters are shown in results and stored with the saved model.
+
 ## CLI Reference
 
 | Flag | Description |
@@ -322,7 +346,8 @@ The agent automatically evaluates these models and selects the best one:
 | `--include-original-tables` | Also copy all original tables into the saved database |
 | `--list-tables` | List all tables in the database |
 | `--overview` | Show comprehensive database overview |
-| `--analyze` | Analysis type: `summary`, `correlations`, `insights`, `target` |
+| `--analyze` | Analysis type: `summary`, `correlations`, `insights`, `target`, `health` |
+| `--tuning` | Hyperparameter-tune the best model: `off`, `quick`, or `full` (default: off) |
 | `--feature-importance` | Show feature importance from trained model |
 | `--model-info` | Show information about trained model |
 | `--llm` | Enable the local LLM advisor (LM Studio) |
@@ -360,8 +385,8 @@ The agent automatically evaluates these models and selects the best one:
 | `apply_preprocessing(ops)` | Apply preprocessing operations to the dataset |
 | `get_preprocessing_summary()` | Get summary of preprocessing operations |
 | `save_preprocessed_db(path, table_name, include_original_tables)` | Save preprocessed dataset as a new SQL database |
-| `analyze(target, type)` | Perform data analysis |
-| `train(target, task_type)` | Train the best model |
+| `analyze(target, type)` | Perform data analysis (`summary`, `correlations`, `insights`, `target`, `health`) |
+| `train(target, task_type)` | Train the best model; optional `tuning="off"/"quick"/"full"`, `progress_callback` |
 | `predict(data)` | Make predictions on new data |
 | `predict_single(data)` | Predict a single record |
 | `get_model_info()` | Get trained model information |
@@ -382,6 +407,7 @@ The agent automatically evaluates these models and selects the best one:
 - `correlations` - Correlation matrix for numeric columns
 - `insights` - Per-column statistics and distributions
 - `target` - Target column distribution and feature correlations
+- `health` - Data-quality report: missing values, duplicates, per-column health, class balance, and warnings
 
 ## LLM Advisor (LM Studio)
 
@@ -431,11 +457,12 @@ Then open **http://localhost:5000** in your browser.
 
 | Tab | Description |
 |-----|-------------|
-| **Data** | Connect to a database, browse tables, run SQL queries, preview data |
-| **Preprocess** | Queue and apply preprocessing operations, or let the LLM suggest them |
-| **Analyze** | Run summary, correlations, insights, and target analysis |
-| **Train** | Train the best model on a target column (auto-detect or explicit task type) |
-| **Predict** | Make predictions on new data via JSON input |
+| **Data** | Connect to a database, browse tables, run SQL queries, preview/export data |
+| **Preprocess** | Queue and apply preprocessing operations, or let the LLM suggest them; export the result |
+| **Analyze** | Run summary, correlations, insights, target, and data-health analysis (with inline charts) |
+| **Train** | Train the best model with **Off / Quick / Full hyperparameter tuning**, live progress + cancel, model-score and feature-importance charts, and a confusion matrix / classification report for classification tasks |
+| **Predict** | Predict single JSON records, batch-predict a DB table / loaded data / uploaded CSV, and export predictions to CSV |
+| **Model Persistence** | Save, download, load, or upload&load portable `.joblib` models |
 | **LLM Advisor** | Enable LM Studio, ask natural-language questions, get target/preprocessing suggestions, and explain results |
 
 ### REST API Endpoints
@@ -455,12 +482,20 @@ Then open **http://localhost:5000** in your browser.
 | `POST` | `/api/preprocess` | Apply preprocessing operations `{"operations": [{"op": "dropna"}]}` |
 | `GET` | `/api/preprocess-summary` | Get preprocessing summary |
 | `POST` | `/api/save-preprocessed-db` | Save preprocessed dataset as a new database |
-| `POST` | `/api/analyze` | Run analysis `{"type": "summary", "target_column": "salary"}` |
-| `POST` | `/api/train` | Train a model `{"target_column": "salary", "task_type": null}` |
+| `POST` | `/api/analyze` | Run analysis `{"type": "summary", "target_column": "salary"}` (`type` can be `summary`/`correlations`/`insights`/`target`/`health`) |
+| `POST` | `/api/train` | Start async training job `{"target_column": "salary", "task_type": null, "tuning": "quick"}` → returns `job_id` |
+| `GET` | `/api/train/status/<job_id>` | Poll training job status, progress, and results |
+| `POST` | `/api/train/cancel/<job_id>` | Cancel a running training job |
 | `GET` | `/api/model-info` | Get trained model information |
 | `POST` | `/api/predict` | Make predictions `{"data": [{"age": 30, ...}]}` |
+| `POST` | `/api/predict/table` | Batch-predict every row of a table `{"table": "employees"}` |
+| `POST` | `/api/predict/current` | Batch-predict the currently loaded dataset |
+| `POST` | `/api/predict/upload` | Upload a CSV of features and batch-predict them |
+| `GET` | `/api/export/csv` | Download the loaded dataset as CSV |
 | `POST` | `/api/save-model` | Save the trained model `{"path": "model.joblib"}` |
 | `POST` | `/api/load-model` | Load a trained model `{"path": "model.joblib"}` |
+| `GET` | `/api/model/download` | Download a saved model file `?path=model.joblib` |
+| `POST` | `/api/upload-model` | Upload a `.joblib`/`.pkl` model file and load it |
 | `POST` | `/api/llm/enable` | Enable the LLM advisor `{"base_url": "...", "model": "..."}` |
 | `GET` | `/api/llm/check` | Check LLM availability |
 | `POST` | `/api/llm/sql` | Natural-language → SQL `{"question": "..."}` |
