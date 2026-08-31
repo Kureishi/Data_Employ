@@ -53,6 +53,21 @@ def _get_agent() -> MLAgent:
     return AGENT
 
 
+def _init_agent_stores(agent: MLAgent) -> None:
+    """Set up per-database persistent stores for saved queries and profiles."""
+    try:
+        cs = agent.db.connection_string or "db"
+        slug = "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in cs)[:60]
+        if not slug:
+            slug = "db"
+        store_dir = os.path.join(UPLOAD_DIR, "stores")
+        os.makedirs(store_dir, exist_ok=True)
+        agent.db.set_query_store(os.path.join(store_dir, f"{slug}_queries.json"))
+        agent.db.set_profile_store(os.path.join(store_dir, f"{slug}_profiles.json"))
+    except Exception:
+        pass
+
+
 def _jsonable(obj: Any) -> Any:
     """Convert an object to a JSON-serializable representation."""
     if isinstance(obj, pd.DataFrame):
@@ -164,6 +179,7 @@ def api_connect():
 
     try:
         AGENT = MLAgent(connection)
+        _init_agent_stores(AGENT)
         tables = AGENT.list_tables()
         return _success(
             connected=True,
@@ -207,6 +223,7 @@ def api_upload_db():
 
     try:
         AGENT = MLAgent(save_path)
+        _init_agent_stores(AGENT)
         tables = AGENT.list_tables()
         return _success(
             connected=True,
@@ -340,6 +357,184 @@ def api_load_query():
             columns=list(agent.current_df.columns),
             data=_jsonable(agent.current_df.head(100)),
             preview=_df_to_html_table(agent.current_df),
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+# ========== SQL-specific features (column typing / sampling / joins) ==========
+
+
+@app.route("/api/columns/<table>/types", methods=["GET"])
+def api_column_types(table: str):
+    try:
+        agent = _get_agent()
+        types = agent.get_column_types(table)
+        return _success(table=table, columns=types)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/relationships", methods=["GET"])
+def api_relationships():
+    try:
+        agent = _get_agent()
+        return _success(relationships=agent.get_relationships())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/load-sample", methods=["POST"])
+def api_load_sample():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        table = data.get("table")
+        if not table:
+            return _error("table is required.")
+        df = agent.load_table_sample(
+            table,
+            fraction=data.get("fraction", 0.1),
+            columns=data.get("columns"),
+            limit=data.get("limit"),
+            method=data.get("method", "auto"),
+        )
+        return _success(loaded=True, table=table, rows=len(df),
+                        columns=list(df.columns), data=_jsonable(df.head(100)))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/load-join", methods=["POST"])
+def api_load_join():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        tables = data.get("tables")
+        if not tables or not isinstance(tables, list):
+            return _error("tables (list) is required.")
+        df = agent.load_auto_join(tables, data.get("join_type", "inner"))
+        return _success(loaded=True, tables=tables, rows=len(df),
+                        columns=list(df.columns), data=_jsonable(df.head(100)))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/query/build-join", methods=["POST"])
+def api_build_join():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        tables = data.get("tables")
+        if not tables or not isinstance(tables, list):
+            return _error("tables (list) is required.")
+        built = agent.db.build_join_query(tables, data.get("join_type", "inner"))
+        return _success(query=built["query"], joins=built["joins"])
+    except Exception as e:
+        return _error(str(e))
+
+
+# ========== Saved query library (Feature 2) ==========
+
+
+@app.route("/api/query/save", methods=["POST"])
+def api_query_save():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        query = data.get("query")
+        if not name or not query:
+            return _error("Both 'name' and 'query' are required.")
+        key = agent.save_query(name, query, data.get("description", ""))
+        return _success(saved=True, name=key)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/query/list", methods=["GET"])
+def api_query_list():
+    try:
+        agent = _get_agent()
+        return _success(queries=agent.list_queries())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/query/get/<name>", methods=["GET"])
+def api_query_get(name: str):
+    try:
+        agent = _get_agent()
+        q = agent.get_query(name)
+        if q is None:
+            return _error("Query not found.", status=404)
+        return _success(query=q)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/query/delete/<name>", methods=["POST"])
+def api_query_delete(name: str):
+    try:
+        agent = _get_agent()
+        deleted = agent.delete_query(name)
+        if not deleted:
+            return _error("Query not found.", status=404)
+        return _success(deleted=True)
+    except Exception as e:
+        return _error(str(e))
+
+
+# ========== Schema drift profiling (Feature 7) ==========
+
+
+@app.route("/api/profile/capture", methods=["POST"])
+def api_profile_capture():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        profile = agent.capture_profile(table=data.get("table"), name=data.get("name", ""))
+        return _success(profile=profile)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/profile/list", methods=["GET"])
+def api_profile_list():
+    try:
+        agent = _get_agent()
+        return _success(profiles=agent.list_profiles())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/profile/compare", methods=["POST"])
+def api_profile_compare():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        a, b = data.get("a"), data.get("b")
+        if not a or not b:
+            return _error("Both 'a' and 'b' profile names are required.")
+        diff = agent.compare_profiles(a, b)
+        return _success(diff=diff)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings():
+    """Update DB query safety settings (read-only mode / timeout)."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        if "read_only" in data:
+            agent.db.read_only = bool(data["read_only"])
+        if "timeout" in data:
+            agent.db.query_timeout = data.get("timeout")
+        return _success(
+            read_only=agent.db.read_only,
+            timeout=agent.db.query_timeout,
         )
     except Exception as e:
         return _error(str(e))

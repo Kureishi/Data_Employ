@@ -737,3 +737,9 @@ button:disabled {
     font-size: 13px;
     line-height: 1.6;
 }
+
+/* Schema tab */
+.sem-tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:var(--primary-light);color:var(--primary);}
+#join-tables{min-width:200px;}
+.chart svg{max-width:100%;height:auto;}
+

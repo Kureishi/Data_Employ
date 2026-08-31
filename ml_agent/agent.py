@@ -82,6 +82,72 @@ class MLAgent:
         self.current_table = f"query: {query[:50]}..."
         return self.current_df
 
+    # ========== SQL-specific helpers (column typing / sampling / joins) ==========
+
+    def get_column_types(self, table: str, sample_limit: int = 1000) -> List[Dict[str, Any]]:
+        """Return semantic column types (id/fk/date/boolean/numeric/...) for a table."""
+        return self.db.get_column_types(table, sample_limit=sample_limit)
+
+    def load_table_sample(
+        self, table: str, fraction: float = 0.1, columns: Optional[List[str]] = None,
+        limit: Optional[int] = None, method: str = "auto",
+    ) -> pd.DataFrame:
+        """Load a random sample of a table, sampled inside the DB."""
+        df = self.db.load_table_sample(
+            table, fraction=fraction, columns=columns, limit=limit, method=method
+        )
+        self.current_table = table
+        self.current_df = df
+        return df
+
+    def load_auto_join(self, tables: List[str], join_type: str = "inner") -> pd.DataFrame:
+        """Load data by auto-joining related tables via FK metadata."""
+        df = self.db.load_auto_join(tables, join_type)
+        self.current_table = "+".join(tables)
+        self.current_df = df
+        return df
+
+    def get_relationships(self) -> List[Dict[str, Any]]:
+        """Return FK relationships across all tables (for ER diagrams / query builder)."""
+        rels = []
+        for t in self.list_tables():
+            for fk in self.db.get_foreign_keys(t):
+                rels.append({
+                    "from_table": t,
+                    "from_columns": fk.get("constrained_columns", []),
+                    "to_table": fk.get("referred_table"),
+                    "to_columns": fk.get("referred_columns", []),
+                })
+        return rels
+
+    # ========== Saved query library (Feature 2) ==========
+
+    def save_query(self, name: str, query: str, description: str = "") -> str:
+        return self.db.save_query(name, query, description)
+
+    def list_queries(self) -> List[Dict[str, Any]]:
+        return self.db.list_queries()
+
+    def get_query(self, name: str) -> Optional[Dict[str, Any]]:
+        return self.db.get_query(name)
+
+    def delete_query(self, name: str) -> bool:
+        return self.db.delete_query(name)
+
+    # ========== Schema drift profiling (Feature 7) ==========
+
+    def set_profile_store(self, path: str) -> None:
+        self.db.set_profile_store(path)
+
+    def capture_profile(self, table: Optional[str] = None, name: str = "") -> Dict[str, Any]:
+        return self.db.capture_profile(table=table, name=name)
+
+    def list_profiles(self) -> List[str]:
+        return self.db.list_profiles()
+
+    def compare_profiles(self, a: str, b: str) -> Dict[str, Any]:
+        return self.db.compare_profiles(a, b)
+
     # ========== Preprocessing Operations ==========
 
     def preprocess(self, df: Optional[pd.DataFrame] = None) -> DataPreprocessor:

@@ -212,6 +212,19 @@ function populateTableSelect(tables) {
             tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
         if (cur) predictSelect.value = cur;
     }
+    // Schema tab table selects
+    for (const id of ['schema-table-select', 'sample-table-select']) {
+        const s = document.getElementById(id);
+        if (s) {
+            s.innerHTML = '<option value="">Select a table...</option>' +
+                tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+        }
+    }
+    // Auto-join multiselect
+    const jt = document.getElementById('join-tables');
+    if (jt) {
+        jt.innerHTML = tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    }
 }
 
 // ============ CSV / chart helpers ============
@@ -1087,6 +1100,84 @@ document.getElementById('btn-upload-model').addEventListener('click', async (e) 
         setLoading(_btn, false);
     }
 });
+
+// ============ Schema tab (SQL-specific features) ============
+function renderErDiagram(o, rels){
+  const ts=(o&&o.tables)||[]; if(!ts.length) return '<p class="hint">No tables.</p>';
+  const bW=220,bH=70,gap=40,rGap=60,cols=Math.max(1,Math.ceil(Math.sqrt(ts.length)));
+  const pos={}; ts.forEach((t,i)=>{const r=Math.floor(i/cols),c=i%cols;pos[t.name]={x:30+c*(bW+gap),y:40+r*(bH+rGap)};});
+  const W=Math.max(780,cols*(bW+gap)+30),H=Math.max(220,Math.ceil(ts.length/cols)*(bH+rGap)+60);
+  let s=`<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">`;
+  (rels||[]).forEach(e=>{const a=pos[e.from_table],b=pos[e.to_table];if(!a||!b)return;
+    const x1=a.x+bW,y1=a.y+bH/2,x2=b.x,y2=b.y+bH/2,m=(x1+x2)/2;
+    const lbl=((e.from_columns||[])[0]||'')+'→'+((e.to_columns||[])[0]||'');
+    s+=`<path d="M ${x1} ${y1} C ${m} ${y1}, ${m} ${y2}, ${x2} ${y2}" fill="none" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arr)"></path>`;
+    s+=`<text x="${m}" y="${(y1+y2)/2-4}" font-size="10" fill="#6b7280" text-anchor="middle">${escapeHtml(lbl)}</text>`;});
+  ts.forEach(t=>{const p=pos[t.name];const ct=(t.columns||[]).map(c=>c.name||c).join(', ');
+    const lab=t.name.length>22?t.name.slice(0,20)+'…':t.name, disp=ct.length>40?ct.slice(0,38)+'…':ct;
+    s+=`<rect x="${p.x}" y="${p.y}" width="${bW}" height="${bH}" rx="6" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"></rect>`;
+    s+=`<text x="${p.x+10}" y="${p.y+22}" font-size="13" font-weight="600" fill="#1f2937">${escapeHtml(lab)}</text>`;
+    s+=`<text x="${p.x+10}" y="${p.y+40}" font-size="10" fill="#6b7280">${t.row_count??''} rows</text>`;
+    s+=`<text x="${p.x+10}" y="${p.y+56}" font-size="10" fill="#4b5563">${escapeHtml(disp)}</text>`;});
+  s=s.replace('<svg ','<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4f46e5"></path></marker></defs><svg ')+'</svg>';
+  return `<div class="chart">${s}</div>`;
+}
+document.getElementById('btn-render-er').addEventListener('click',async e=>{const _b=e.currentTarget;setLoading(_b,true);
+  try{const[o,r]=await Promise.all([api('/api/overview'),api('/api/relationships')]);
+    document.getElementById('er-diagram').innerHTML=renderErDiagram(o.overview,r.relationships);}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+document.getElementById('btn-column-types').addEventListener('click',async e=>{const t=document.getElementById('schema-table-select').value;if(!t)return showToast('Select a table.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const res=await api(`/api/columns/${encodeURIComponent(t)}/types`);
+    let h='<div class="table-container"><table class="dataframe"><thead><tr><th>Column</th><th>SQL Type</th><th>Semantic</th><th>PK</th><th>FK</th><th>Null</th></tr></thead><tbody>';
+    res.columns.forEach(c=>{h+=`<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.type)}</td><td><span class="sem-tag">${escapeHtml(c.semantic_type)}</span></td><td>${c.primary_key?'✓':''}</td><td>${c.foreign_key?'✓':''}</td><td>${c.nullable}</td></tr>`;});
+    document.getElementById('column-types-result').innerHTML=h+'</tbody></table></div>';}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+function selectedJoinTables(){return Array.from(document.getElementById('join-tables').selectedOptions).map(o=>o.value);}
+document.getElementById('btn-build-join').addEventListener('click',async e=>{const ts=selectedJoinTables();if(ts.length<2)return showToast('Select ≥2 tables.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const res=await api('/api/query/build-join','POST',{tables:ts,join_type:document.getElementById('join-type').value});
+    document.getElementById('join-sql').innerHTML=`<code>${escapeHtml(res.query)}</code>`;}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+document.getElementById('btn-load-join').addEventListener('click',async e=>{const ts=selectedJoinTables();if(ts.length<2)return showToast('Select ≥2 tables.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const res=await api('/api/load-join','POST',{tables:ts,join_type:document.getElementById('join-type').value});
+    document.getElementById('join-result').innerHTML=`<strong>Loaded ${res.rows} rows × ${res.columns.length}</strong><br>`+renderTable(res.data||[],res.columns);}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+document.getElementById('btn-load-sample').addEventListener('click',async e=>{const t=document.getElementById('sample-table-select').value;if(!t)return showToast('Select a table.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const res=await api('/api/load-sample','POST',{table:t,limit:document.getElementById('sample-limit').value||null});
+    document.getElementById('sample-result').innerHTML=`<strong>Loaded sample: ${res.rows} rows</strong><br>`+renderTable(res.data||[],res.columns);}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+
+// ----- Schema tab: saved queries, profiles, settings -----
+async function refreshSavedQueries(){
+  try{const res=await api('/api/query/list');const qs=res.queries||[];const el=document.getElementById('saved-query-list');
+    if(!qs.length){el.innerHTML='<p class="hint">No saved queries yet.</p>';return;}
+    let h='<div class="table-container"><table class="dataframe"><thead><tr><th>Name</th><th>Query</th><th></th></tr></thead><tbody>';
+    qs.forEach(q=>{h+=`<tr><td>${escapeHtml(q.name)}</td><td><code>${escapeHtml((q.query||'').slice(0,60))}</code></td><td><button class="btn btn-outline btn-sm js-rq" data-n="${escapeHtml(q.name)}">Run</button> <button class="btn btn-danger btn-sm js-dq" data-n="${escapeHtml(q.name)}">✕</button></td></tr>`;});
+    el.innerHTML=h+'</tbody></table></div>';
+    el.querySelectorAll('.js-rq').forEach(b=>b.addEventListener('click',async()=>{const nm=b.dataset.n;const q=(await api(`/api/query/get/${encodeURIComponent(nm)}`)).query;document.getElementById('query-store-sql').value=q.query;
+      try{const r=await api('/api/load-query','POST',{query:q.query});showToast(`Ran '${nm}': ${r.rows} rows`,'success');}catch(err){showToast(err.message,'error');}}));
+    el.querySelectorAll('.js-dq').forEach(b=>b.addEventListener('click',async()=>{try{await api(`/api/query/delete/${encodeURIComponent(b.dataset.n)}`,'POST');showToast('Deleted.','success');await refreshSavedQueries();}catch(err){showToast(err.message,'error');}}));
+  }catch(e){}}
+document.getElementById('btn-save-query').addEventListener('click',async e=>{const nm=document.getElementById('query-store-name').value.trim(),q=document.getElementById('query-store-sql').value.trim();
+  if(!nm||!q)return showToast('Enter a name and query.','error');const _b=e.currentTarget;setLoading(_b,true);
+  try{await api('/api/query/save','POST',{name:nm,query:q});showToast(`Saved '${nm}'`,'success');await refreshSavedQueries();}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+document.getElementById('btn-run-querysaved').addEventListener('click',async e=>{const q=document.getElementById('query-store-sql').value.trim();if(!q)return showToast('Enter a query.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const r=await api('/api/load-query','POST',{query:q});showToast(`Ran query: ${r.rows} rows`,'success');document.getElementById('saved-query-list').innerHTML=`<strong>${r.rows}</strong> rows · columns: ${r.columns.join(', ')}`;}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+async function refreshProfiles(){
+  try{const res=await api('/api/profile/list');const names=res.profiles||[];
+    ['profile-a','profile-b'].forEach(id=>{const s=document.getElementById(id);s.innerHTML=names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');});
+    document.getElementById('profile-status').innerHTML=names.length?`<p class="hint">${names.length} profile(s).</p>`:'<p class="hint">No profiles yet.</p>';}catch(e){}}
+document.getElementById('btn-capture-profile').addEventListener('click',async e=>{const nm=document.getElementById('profile-name').value.trim()||('snap_'+Date.now());
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{await api('/api/profile/capture','POST',{name:nm});showToast(`Captured '${nm}'`,'success');await refreshProfiles();}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+document.getElementById('btn-compare-profiles').addEventListener('click',async e=>{const a=document.getElementById('profile-a').value,b=document.getElementById('profile-b').value;if(!a||!b)return showToast('Select two profiles.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const res=await api('/api/profile/compare','POST',{a,b});const d=res.diff;
+    let h=`<strong>${escapeHtml(d.from)}</strong> vs <strong>${escapeHtml(d.to)}</strong><br>`;
+    h+=(d.summary&&d.summary.length)?('<ul class="warning-list">'+d.summary.map(s=>`<li>${escapeHtml(s)}</li>`).join('')+'</ul>'):'<p class="hint">No changes detected.</p>';
+    document.getElementById('profile-status').innerHTML=h;}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+document.getElementById('btn-save-settings').addEventListener('click',async e=>{const _b=e.currentTarget;setLoading(_b,true);
+  try{const p={read_only:document.getElementById('read-only-flag').checked};const to=document.getElementById('query-timeout').value;if(to)p.timeout=Number(to);
+    const res=await api('/api/settings','POST',p);showToast(`Settings: read-only=${res.read_only}, timeout=${res.timeout??'none'}`,'success');}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
 
 // ============ Tab switching ============
 

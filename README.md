@@ -6,6 +6,13 @@ An intelligent agent that processes SQL databases, automatically determines the 
 
 - **SQL Database Processing**: Connects to SQLite, PostgreSQL, MySQL, and other SQL databases via SQLAlchemy
 - **Multi-Table Support**: Discovers all tables, schemas, primary/foreign keys, and relationships
+- **Semantic Column Typing**: Heuristically classifies each column (id, foreign_key, date, boolean, category, numeric, ratio, text) to guide preprocessing and joins
+- **Saved Query Library**: Name, persist, and re-run SQL queries (stored per database)
+- **Auto-Join / Query Builder**: Pick related tables; FK metadata drives the JOIN and disambiguated SELECT
+- **DB-Native Sampling**: Load a random sample or specific columns, pushed down into SQL (unlocks large tables)
+- **Visual ER Diagram**: Interactive schema rendering of tables and foreign-key relationships
+- **Read-Only Safety + Timeouts**: Block write statements and cap query time by default
+- **Schema Drift Profiling**: Capture and compare data/schema snapshots to flag drift over time
 - **Automatic Model Selection**: Evaluates 9 regression models and 7 classification models using cross-validation to find the best performer
 - **Hyperparameter Tuning**: Optionally tune the best-selected model with `GridSearchCV` (Full) or `RandomizedSearchCV` (Quick) — Off / Quick / Full
 - **Task Type Auto-Detection**: Automatically determines if the task is regression or classification based on data characteristics
@@ -463,6 +470,7 @@ Then open **http://localhost:5000** in your browser.
 | **Train** | Train the best model with **Off / Quick / Full hyperparameter tuning**, live progress + cancel, model-score and feature-importance charts, and a confusion matrix / classification report for classification tasks |
 | **Predict** | Predict single JSON records, batch-predict a DB table / loaded data / uploaded CSV, and export predictions to CSV |
 | **Model Persistence** | Save, download, load, or upload&load portable `.joblib` models |
+| **Schema** | ER diagram, semantic column types, auto-join builder, saved queries, sample loading, drift profiling, and read-only/query-safety settings |
 | **LLM Advisor** | Enable LM Studio, ask natural-language questions, get target/preprocessing suggestions, and explain results |
 
 ### REST API Endpoints
@@ -479,6 +487,19 @@ Then open **http://localhost:5000** in your browser.
 | `POST` | `/api/load` | Load a table as the working dataset `{"table": "employees"}` |
 | `POST` | `/api/query` | Execute a SQL query `{"query": "SELECT * FROM employees"}` |
 | `POST` | `/api/load-query` | Load query results as the working dataset |
+| `GET` | `/api/columns/<table>/types` | Semantic column types for a table |
+| `GET` | `/api/relationships` | Foreign-key relationships across tables |
+| `POST` | `/api/load-sample` | Load a DB-native sampled subset `{"table": ..., "fraction": 0.1, "limit": 100}` |
+| `POST` | `/api/load-join` | Auto-join + load related tables `{"tables": ["employees","departments"], "join_type": "inner"}` |
+| `POST` | `/api/query/build-join` | Build an auto-join SQL query for a set of tables |
+| `POST` | `/api/query/save` | Save a named query `{"name": ..., "query": ...}` |
+| `GET` | `/api/query/list` | List saved queries |
+| `GET` | `/api/query/get/<name>` | Get a saved query |
+| `POST` | `/api/query/delete/<name>` | Delete a saved query |
+| `POST` | `/api/profile/capture` | Capture a schema/data snapshot `{"name": "snap1"}` |
+| `GET` | `/api/profile/list` | List captured profiles |
+| `POST` | `/api/profile/compare` | Compare two profiles `{"a": ..., "b": ...}` |
+| `POST` | `/api/settings` | Update DB safety settings `{"read_only": false, "timeout": 30}` |
 | `POST` | `/api/preprocess` | Apply preprocessing operations `{"operations": [{"op": "dropna"}]}` |
 | `GET` | `/api/preprocess-summary` | Get preprocessing summary |
 | `POST` | `/api/save-preprocessed-db` | Save preprocessed dataset as a new database |
