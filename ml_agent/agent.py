@@ -1,5 +1,6 @@
 """Main ML Agent orchestrator."""
 import json
+import os
 from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 from .database import DatabaseProcessor
@@ -57,6 +58,7 @@ class MLAgent:
         self.target_column: Optional[str] = None
         self.synthesizer = RelationalFeatureSynthesizer(self.db)
         self.experiments = ExperimentTracker()
+        self.models_dir: Optional[str] = None
         self.validator = SQLValidator(self.db)
         self.anomaly = AnomalyDetector(random_state=random_state)
         self.monitor = ModelMonitor()
@@ -421,9 +423,61 @@ class MLAgent:
             self.experiments.fail(eid, str(e))
             raise
         self.experiments.finish(eid, training_results=results)
-        results["experiment"] = eid
         self.predictor = Predictor(self.model_selector)
+
+        # Auto-save the trained model so a champion can be reloaded on rollback.
+        model_path = self._experiment_model_path(eid)
+        try:
+            self.model_selector.save_model(model_path)
+        except Exception:
+            model_path = None
+        if model_path:
+            self.experiments.set_model_path(eid, model_path)
+            results["model_path"] = model_path
+
+        results["experiment"] = eid
         return results
+
+    def _experiment_model_path(self, eid: str) -> str:
+        """Return a deterministic per-experiment model save path."""
+        base = self.models_dir
+        if not base:
+            store = getattr(self.experiments, "_store_path", None)
+            if store:
+                base = os.path.join(os.path.dirname(store), "models")
+            else:
+                base = "models"
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, f"{eid}.joblib")
+
+    def promote_experiment(self, eid: str) -> Dict[str, Any]:
+        """Promote an experiment to champion if it beats the current one, and
+        reload the champion's persisted model so predictions use it."""
+        decision = self.experiments.promote_if_better(eid)
+        champion = decision.get("champion")
+        reloaded = False
+        if champion and champion.get("model_path"):
+            try:
+                self.load_model(champion["model_path"])
+                reloaded = True
+            except Exception:
+                reloaded = False
+        decision["reloaded"] = reloaded
+        return decision
+
+    def rollback_experiment(self) -> Dict[str, Any]:
+        """Revert the champion to the previous experiment and reload its model."""
+        result = self.experiments.rollback()
+        champion = result.get("champion")
+        reloaded = False
+        if result.get("rolled_back") and champion and champion.get("model_path"):
+            try:
+                self.load_model(champion["model_path"])
+                reloaded = True
+            except Exception:
+                reloaded = False
+        result["reloaded"] = reloaded
+        return result
 
     # ========== Prediction Operations ==========
 

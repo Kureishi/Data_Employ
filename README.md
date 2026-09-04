@@ -14,7 +14,7 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **Read-Only Safety + Timeouts**: Block write statements and cap query time by default
 - **Schema Drift Profiling**: Capture and compare data/schema snapshots to flag drift over time
 - **Relational Deep-Feature Synthesis**: Auto-generate ML features by aggregating child tables in SQL (counts, sums, avgs) via FK metadata
-- **Versioned Experiments + Champion**: Every training run records its data source, config, and metrics; select a live champion with rollback tracking
+- **Versioned Experiments + Champion**: Every training run records its data source, config, metrics, and an auto-saved model; promote the best run to champion ("promote if better") and roll back to the previous champion, reloading its model automatically
 - **Safe NLP→SQL Validation**: Schema-aware validation of user/LLM-generated SQL — verifies table/column references and flags writes, cartesian joins, `SELECT *`, and missing `LIMIT` before running
 - **Anomaly Detection**: Unsupervised Isolation Forest scoring over loaded data or a table, with per-feature importance and per-outlier driver explanations
 - **Prediction Explainability & What-If**: Per-record feature contributions and single-feature perturbation ("what-if") analysis on a trained model
@@ -510,6 +510,8 @@ Then open **http://localhost:5000** in your browser.
 | `POST` | `/api/synthesize` | Generate relational deep features `{"table": "employees", "include_counts": true}` |
 | `GET` | `/api/experiments` | List recorded training experiments |
 | `GET` | `/api/experiments/champion` | Get the current champion experiment |
+| `POST` | `/api/experiments/<eid>/promote` | Promote an experiment if it beats the champion (higher CV score wins) and reload its model |
+| `POST` | `/api/experiments/rollback` | Revert the champion to the previous experiment and reload its model |
 | `POST` | `/api/experiments/<id>/champion` | Set an experiment as champion |
 | `POST` | `/api/experiments/compare` | Compare two experiments `{"a": ..., "b": ...}` |
 | `DELETE` | `/api/experiments/<id>` | Delete an experiment |

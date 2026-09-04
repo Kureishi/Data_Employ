@@ -1369,17 +1369,49 @@ document.getElementById('btn-synthesize').addEventListener('click',async e=>{con
     document.getElementById('deepfeat-result').innerHTML=h+renderTable(res.data||[],res.columns);}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
 
 // ----- Schema tab: experiments & champion -----
-async function refreshExperiments(){
-  try{const res=await api('/api/experiments');const ex=res.experiments||[];const el=document.getElementById('experiments-list');
-    const champ=(await api('/api/experiments/champion')).champion;
-    document.getElementById('champion-label').textContent=champ?`Champion: ${champ.best_model} (${champ.target_column})`:'No champion set';
-    if(!ex.length){el.innerHTML='<p class="hint">No experiments yet. Train a model to record one.</p>';return;}
-    el.innerHTML='<div class="table-container"><table class="dataframe"><thead><tr><th>ID</th><th>Source</th><th>Target</th><th>Model</th><th>CV</th><th>Status</th><th></th></tr></thead><tbody>'+
-      ex.map(x=>`<tr><td><code>${escapeHtml(x.id)}</code></td><td>${escapeHtml(x.data_source)}</td><td>${escapeHtml(x.target_column||'')}</td><td>${escapeHtml(x.best_model||'-')}</td><td>${x.best_cv_score!=null?x.best_cv_score.toFixed(4):'-'}</td><td>${escapeHtml(x.status)}</td><td><button class="btn btn-outline btn-sm js-champ" data-id="${escapeHtml(x.id)}">Champion</button></td></tr>`).join('')+
+async function refreshExperiments() {
+  try {
+    const res = await api('/api/experiments');
+    const ex = res.experiments || [];
+    const el = document.getElementById('experiments-list');
+    const champ = (await api('/api/experiments/champion')).champion;
+    document.getElementById('btn-rollback-champion').style.display = champ ? '' : 'none';
+    document.getElementById('champion-label').textContent = champ
+      ? `Champion: ${champ.best_model} (${champ.target_column}) — ${champ.best_cv_score != null ? 'CV ' + champ.best_cv_score.toFixed(4) : ''}`
+      : 'No champion set — click Promote on a run to auto-select the best.';
+    if (!ex.length) { el.innerHTML = '<p class="hint">No experiments yet. Train a model to record one.</p>'; return; }
+    el.innerHTML = '<div class="table-container"><table class="dataframe"><thead><tr><th>Target</th><th>Model</th><th>CV</th><th>Status</th><th></th></tr></thead><tbody>' +
+      ex.map(x => `<tr><td>${escapeHtml(x.target_column || '')}</td><td>${escapeHtml(x.best_model || '-')}</td><td>${x.best_cv_score != null ? x.best_cv_score.toFixed(4) : '-'}</td><td>${escapeHtml(x.status)}</td>` +
+        `<td><button class="btn btn-outline btn-sm js-promote" data-id="${escapeHtml(x.id)}">Promote if Better</button></td></tr>`).join('') +
       '</tbody></table></div>';
-    el.querySelectorAll('.js-champ').forEach(b=>b.addEventListener('click',async()=>{try{await api(`/api/experiments/${encodeURIComponent(b.dataset.id)}/champion`,'POST');showToast('Champion set.','success');await refreshExperiments();}catch(err){showToast(err.message,'error');}}));
-  }catch(e){}}
-document.getElementById('btn-refresh-experiments').addEventListener('click',()=>refreshExperiments());
+    el.querySelectorAll('.js-promote').forEach(b => b.addEventListener('click', async (e) => {
+      const _b = e.currentTarget; setLoading(_b, true);
+      try {
+        const r = await api(`/api/experiments/${encodeURIComponent(b.dataset.id)}/promote`, 'POST', {});
+        const d = r.promote || r;
+        const why = d.decision === 'promoted'
+          ? (d.reason === 'first_champion' ? 'set as first champion' : 'beats current champion')
+          : (d.reason === 'not_better' ? 'not better than current champion' : (d.reason === 'no_score' ? 'no CV score' : 'kept'));
+        showToast(`Promote: ${d.decision} (${why})${d.reloaded ? ' — model reloaded' : ''}`, d.decision === 'promoted' ? 'success' : 'warning');
+        refreshState({ silent: true });
+        await refreshExperiments();
+      } catch (err) { showToast(err.message, 'error'); }
+      finally { setLoading(_b, false); }
+    }));
+  } catch (e) { }
+}
+document.getElementById('btn-refresh-experiments').addEventListener('click', () => refreshExperiments());
+document.getElementById('btn-rollback-champion').addEventListener('click', async (e) => {
+  const _b = e.currentTarget; setLoading(_b, true);
+  try {
+    const r = await api('/api/experiments/rollback', 'POST', {});
+    const d = r.rollback || r;
+    showToast(d.rolled_back ? `Rolled back to: ${d.champion && d.champion.best_model}${d.reloaded ? ' (model reloaded)' : ''}` : 'No previous champion to roll back to.', d.rolled_back ? 'success' : 'warning');
+    if (d.rolled_back) refreshState({ silent: true });
+    await refreshExperiments();
+  } catch (err) { showToast(err.message, 'error'); }
+  finally { setLoading(_b, false); }
+});
 
 // ============ Tab switching ============
 

@@ -65,6 +65,7 @@ def _init_agent_stores(agent: MLAgent) -> None:
         agent.db.set_query_store(os.path.join(store_dir, f"{slug}_queries.json"))
         agent.db.set_profile_store(os.path.join(store_dir, f"{slug}_profiles.json"))
         agent.experiments.set_store(os.path.join(store_dir, f"{slug}_experiments.json"))
+        agent.models_dir = os.path.join(store_dir, "models")
     except Exception:
         pass
 
@@ -695,6 +696,7 @@ def _serialize_training(results: Dict[str, Any]) -> Dict[str, Any]:
         "best_params": results.get("best_params"),
         "tuning": results.get("tuning"),
         "experiment": results.get("experiment"),
+        "model_path": results.get("model_path"),
     }
 
 
@@ -1111,6 +1113,29 @@ def api_experiments_get_champion():
     try:
         agent = _get_agent()
         return _success(champion=agent.experiments.champion())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/<eid>/promote", methods=["POST"])
+def api_experiments_promote(eid: str):
+    """Promote an experiment to champion if it beats the current one, and
+    reload the champion model so it becomes the live predictor."""
+    try:
+        agent = _get_agent()
+        result = agent.promote_experiment(eid)
+        return _success(**_jsonable(result))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/rollback", methods=["POST"])
+def api_experiments_rollback():
+    """Revert the champion to the previous experiment and reload its model."""
+    try:
+        agent = _get_agent()
+        result = agent.rollback_experiment()
+        return _success(**_jsonable(result))
     except Exception as e:
         return _error(str(e))
 

@@ -19,11 +19,13 @@ class ExperimentTracker:
         self._store_path = store_path
         self._experiments: Dict[str, dict] = {}
         self._champion_id: Optional[str] = None
+        self._prev_champion_id: Optional[str] = None
         if store_path and os.path.exists(store_path):
             try:
                 with open(store_path, "r", encoding="utf-8") as fh:
-                    self._experiments = json.load(fh).get("experiments", {})
-                self._champion_id = None
+                    data = json.load(fh)
+                self._experiments = data.get("experiments", {})
+                self._champion_id = data.get("champion") or None
             except Exception:
                 self._experiments = {}
 
@@ -34,6 +36,7 @@ class ExperimentTracker:
                 with open(path, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
                 self._experiments = data.get("experiments", {})
+                self._champion_id = data.get("champion") or None
             except Exception:
                 self._experiments = {}
 
@@ -42,7 +45,13 @@ class ExperimentTracker:
             return
         try:
             with open(self._store_path, "w", encoding="utf-8") as fh:
-                json.dump({"experiments": self._experiments}, fh, indent=2)
+                json.dump(
+                    {
+                        "experiments": self._experiments,
+                        "champion": self._champion_id,
+                    },
+                    fh, indent=2,
+                )
         except Exception:
             pass
 
@@ -113,13 +122,95 @@ class ExperimentTracker:
         return self._experiments.get(eid)
 
     def set_champion(self, eid: str) -> bool:
-        if eid in self._experiments:
+        if eid not in self._experiments:
+            return False
+        if eid != self._champion_id:
+            self._prev_champion_id = self._champion_id
             self._champion_id = eid
-            return True
-        return False
+            self._persist()
+        return True
 
     def champion(self):
         return self._experiments.get(self._champion_id) if self._champion_id else None
+
+    def prev_champion(self):
+        return (
+            self._experiments.get(self._prev_champion_id)
+            if self._prev_champion_id else None
+        )
+
+    def set_model_path(self, eid: str, path: Optional[str]) -> None:
+        exp = self._experiments.get(eid)
+        if exp:
+            exp["model_path"] = path
+            self._persist()
+
+    def promote_if_better(self, eid: str) -> Dict[str, Any]:
+        """Automatically promote an experiment if it beats the current champion.
+
+        Uses ``best_cv_score`` (accuracy for classification, R2 for regression —
+        higher is better). Returns a decision dict describing the outcome.
+        """
+        exp = self._experiments.get(eid)
+        if exp is None:
+            raise ValueError(f"Experiment not found: {eid}")
+
+        prev = self._experiments.get(self._champion_id) if self._champion_id else None
+        if prev is None or prev.get("best_cv_score") is None:
+            # No champion yet (or champion has no score) — promote unconditionally.
+            self.set_champion(eid)
+            return {
+                "decision": "promoted",
+                "reason": "first_champion",
+                "previous": prev,
+                "champion": self.champion(),
+            }
+
+        new_score = exp.get("best_cv_score")
+        old_score = prev.get("best_cv_score")
+        if new_score is None:
+            return {
+                "decision": "kept",
+                "reason": "no_score",
+                "previous": prev,
+                "champion": self.champion(),
+            }
+
+        # higher is better (accuracy / R2)
+        if new_score >= old_score:
+            self.set_champion(eid)
+            return {
+                "decision": "promoted",
+                "reason": "better",
+                "previous": prev,
+                "champion": self.champion(),
+            }
+
+        return {
+            "decision": "kept",
+            "reason": "not_better",
+            "previous": prev,
+            "champion": self.champion(),
+        }
+
+    def rollback(self) -> Dict[str, Any]:
+        """Revert the champion to the previous one (if any). Returns a dict
+        describing whether a rollback occurred and the restored champion."""
+        if self._prev_champion_id and self._prev_champion_id in self._experiments:
+            old = self._experiments.get(self._champion_id) if self._champion_id else None
+            self._champion_id = self._prev_champion_id
+            self._prev_champion_id = None
+            self._persist()
+            return {
+                "rolled_back": True,
+                "previous": old,
+                "champion": self._experiments.get(self._champion_id),
+            }
+        return {
+            "rolled_back": False,
+            "previous": None,
+            "champion": self.champion(),
+        }
 
     def delete(self, eid: str) -> bool:
         existed = eid in self._experiments
@@ -127,6 +218,8 @@ class ExperimentTracker:
             del self._experiments[eid]
             if eid == self._champion_id:
                 self._champion_id = None
+            if eid == self._prev_champion_id:
+                self._prev_champion_id = None
             self._persist()
         return existed
 
