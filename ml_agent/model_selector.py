@@ -109,6 +109,7 @@ class ModelSelector:
         self.test_size = test_size
         self.cv_folds = cv_folds
         self.random_state = random_state
+        self.n_jobs: int = 1
 
         self.feature_columns: List[str] = []
         self.categorical_columns: List[str] = []
@@ -124,6 +125,7 @@ class ModelSelector:
         self.pipeline: Optional[Pipeline] = None
         self.preprocessor: Optional[ColumnTransformer] = None
         self.feature_importance: Optional[pd.DataFrame] = None
+        self.feature_reference: Optional[Dict[str, Any]] = None
         self.tuning: Optional[str] = None
         self.best_params: Optional[Dict[str, Any]] = None
 
@@ -267,7 +269,7 @@ class ModelSelector:
                 ])
                 score = cross_val_score(
                     pipeline, X, y, cv=cv,
-                    scoring=self._get_metric(), n_jobs=-1,
+                    scoring=self._get_metric(), n_jobs=self.n_jobs,
                 ).mean()
                 scores[name] = score
             except Exception:
@@ -390,8 +392,22 @@ class ModelSelector:
         self.feature_importance = self._get_feature_importance(
             self.pipeline.named_steps["model"], X_train
         )
+        self._capture_reference(X)
 
         return self.get_result_summary(was_encoded)
+
+    def _capture_reference(self, X: pd.DataFrame) -> None:
+        """Store per-feature "typical" values (median for numeric, mode for
+        categorical) as an explanation baseline for what-if / explanations."""
+        ref: Dict[str, Any] = {}
+        for col in X.columns:
+            s = X[col]
+            if pd.api.types.is_numeric_dtype(s.dtype):
+                ref[col] = {"type": "numeric", "value": float(s.median())}
+            else:
+                mode = s.mode()
+                ref[col] = {"type": "categorical", "value": str(mode.iloc[0]) if len(mode) else None}
+        self.feature_reference = ref
 
     def _tune_best_model(
         self,
@@ -444,12 +460,12 @@ class ModelSelector:
         if self.tuning == "full":
             search = GridSearchCV(
                 est_pipeline, grid, scoring=scorer,
-                cv=inner_cv, n_jobs=-1, refit=True,
+                cv=inner_cv, n_jobs=self.n_jobs, refit=True,
             )
         else:
             search = RandomizedSearchCV(
                 est_pipeline, grid, scoring=scorer,
-                cv=inner_cv, n_jobs=-1, refit=True,
+                cv=inner_cv, n_jobs=self.n_jobs, refit=True,
                 n_iter=self.TUNING_QUICK_N_ITER, random_state=self.random_state,
             )
 
@@ -577,6 +593,7 @@ class ModelSelector:
             "classification_report": self.classification_report,
             "best_params": self.best_params,
             "tuning": self.tuning,
+            "feature_reference": self.feature_reference,
             "class_mapping": (
                 dict(enumerate(self.label_encoder.classes_)) if self.label_encoder else None
             ),
@@ -600,6 +617,7 @@ class ModelSelector:
         self.classification_report = data.get("classification_report")
         self.best_params = data.get("best_params")
         self.tuning = data.get("tuning")
+        self.feature_reference = data.get("feature_reference")
 
         # Restore feature importance DataFrame
         fi_data = data.get("feature_importance")

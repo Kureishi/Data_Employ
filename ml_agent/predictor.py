@@ -91,6 +91,110 @@ class Predictor:
         """Get feature importance from the trained model."""
         return self.model.feature_importance
 
+    def _score(self, row: dict) -> float:
+        """Return a scalar "score" for a row: regression value or class prob
+        for classification (probability of the model's predicted class)."""
+        df = pd.DataFrame([row])
+        if self.model.task_type == "classification":
+            pred = self.model.predict(df)[0]
+            proba = self.model.predict_proba(df)[0]
+            try:
+                idx = int(pred)
+                return float(proba[idx])
+            except Exception:
+                return float(max(proba))
+        return float(self.model.predict(df)[0])
+
+    def explain_prediction(self, data: Dict[str, Any], top_n: int = 5) -> Dict[str, Any]:
+        """Explain a single prediction via feature contributions.
+
+        Each feature is perturbed to its training "typical" value (median for
+        numeric, mode for categorical, from model.feature_reference) and the
+        resulting score change is reported as that feature's contribution.
+        """
+        if self.model.pipeline is None:
+            raise RuntimeError("Model not trained yet. Call train() first.")
+
+        base = self._score(data)
+        contributions = []
+
+        ref = self.model.feature_reference or {}
+        if not ref:
+            # Fall back to global feature importance ordering only
+            fi = self.get_feature_importance()
+            if fi is not None and len(fi):
+                items = fi[["feature", "importance"]].to_dict(orient="records")
+            else:
+                items = []
+            for it in items[: top_n]:
+                contributions.append({
+                    "feature": it["feature"], "kind": "importance",
+                    "contribution": round(float(it["importance"]), 4),
+                })
+        else:
+            for feat, info in ref.items():
+                if feat not in data:
+                    continue
+                scenario = dict(data)
+                scenario[feat] = info["value"]
+                try:
+                    scenario_score = self._score(scenario)
+                except Exception:
+                    continue
+                delta = base - scenario_score  # >0 => feature pulls prediction up vs typical
+                contributions.append({
+                    "feature": feat,
+                    "kind": info.get("type", "numeric"),
+                    "value": data[feat],
+                    "typical": info["value"],
+                    "contribution": round(float(delta), 4),
+                })
+
+        contributions.sort(key=lambda c: abs(c.get("contribution", 0)), reverse=True)
+        if top_n:
+            contributions = contributions[:top_n]
+
+        return {
+            "task_type": self.model.task_type,
+            "target_column": self.model.target_column,
+            "best_model": self.model.best_model_name,
+            "base_prediction": float(base),
+            "prediction": self._decode_prediction(self.model.predict(pd.DataFrame([data]))[0]),
+            "contributions": contributions,
+        }
+
+    def what_if(self, data: Dict[str, Any], feature: str, value: Any) -> Dict[str, Any]:
+        """Recompute the prediction after changing one feature to `value`."""
+        if self.model.pipeline is None:
+            raise RuntimeError("Model not trained yet. Call train() first.")
+        if feature not in (self.model.feature_columns or []):
+            raise ValueError(
+                f"Feature '{feature}' was not used in training. Available: {self.model.feature_columns}"
+            )
+        base_pred = self.model.predict(pd.DataFrame([data]))[0]
+        scenario = dict(data)
+        scenario[feature] = value
+        new_pred = self.model.predict(pd.DataFrame([scenario]))[0]
+        return {
+            "feature": feature,
+            "value": value,
+            "task_type": self.model.task_type,
+            "base_prediction": float(base_pred) if isinstance(base_pred, (int, float, np.integer, np.floating)) else base_pred,
+            "base_prediction_label": self._decode_prediction(base_pred),
+            "new_prediction": float(new_pred) if isinstance(new_pred, (int, float, np.integer, np.floating)) else new_pred,
+            "new_prediction_label": self._decode_prediction(new_pred),
+            "changed": bool(base_pred != new_pred),
+        }
+
+    def _decode_prediction(self, pred) -> Any:
+        """Map an encoded numeric prediction back to a label when applicable."""
+        if self.model.label_encoder is not None:
+            try:
+                return self.model.label_encoder.inverse_transform([int(pred)])[0]
+            except Exception:
+                pass
+        return pred
+
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the trained model."""
         return {

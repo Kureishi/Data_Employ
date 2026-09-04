@@ -13,6 +13,12 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **Visual ER Diagram**: Interactive schema rendering of tables and foreign-key relationships
 - **Read-Only Safety + Timeouts**: Block write statements and cap query time by default
 - **Schema Drift Profiling**: Capture and compare data/schema snapshots to flag drift over time
+- **Relational Deep-Feature Synthesis**: Auto-generate ML features by aggregating child tables in SQL (counts, sums, avgs) via FK metadata
+- **Versioned Experiments + Champion**: Every training run records its data source, config, and metrics; select a live champion with rollback tracking
+- **Safe NLP→SQL Validation**: Schema-aware validation of user/LLM-generated SQL — verifies table/column references and flags writes, cartesian joins, `SELECT *`, and missing `LIMIT` before running
+- **Anomaly Detection**: Unsupervised Isolation Forest scoring over loaded data or a table, with per-feature importance and per-outlier driver explanations
+- **Prediction Explainability & What-If**: Per-record feature contributions and single-feature perturbation ("what-if") analysis on a trained model
+- **Model Drift Monitoring**: Capture a training-time feature reference (PSI) and compare a live table's distributions to flag drift before it degrades predictions
 - **Automatic Model Selection**: Evaluates 9 regression models and 7 classification models using cross-validation to find the best performer
 - **Hyperparameter Tuning**: Optionally tune the best-selected model with `GridSearchCV` (Full) or `RandomizedSearchCV` (Quick) — Off / Quick / Full
 - **Task Type Auto-Detection**: Automatically determines if the task is regression or classification based on data characteristics
@@ -468,10 +474,10 @@ Then open **http://localhost:5000** in your browser.
 | **Preprocess** | Queue and apply preprocessing operations, or let the LLM suggest them; export the result |
 | **Analyze** | Run summary, correlations, insights, target, and data-health analysis (with inline charts) |
 | **Train** | Train the best model with **Off / Quick / Full hyperparameter tuning**, live progress + cancel, model-score and feature-importance charts, and a confusion matrix / classification report for classification tasks |
-| **Predict** | Predict single JSON records, batch-predict a DB table / loaded data / uploaded CSV, and export predictions to CSV |
+| **Predict** | Predict single JSON records, batch-predict a DB table / loaded data / uploaded CSV, export predictions to CSV, explain a prediction by feature contributions, and run single-feature what-if analysis |
 | **Model Persistence** | Save, download, load, or upload&load portable `.joblib` models |
-| **Schema** | ER diagram, semantic column types, auto-join builder, saved queries, sample loading, drift profiling, and read-only/query-safety settings |
-| **LLM Advisor** | Enable LM Studio, ask natural-language questions, get target/preprocessing suggestions, and explain results |
+| **Schema** | ER diagram, semantic column types, auto-join builder, saved queries, sample loading, drift profiling, anomaly detection, model-drift monitoring, and read-only/query-safety settings |
+| **LLM Advisor** | Enable LM Studio, ask natural-language questions (with schema-validated SQL), get target/preprocessing suggestions, and explain results |
 
 ### REST API Endpoints
 
@@ -486,6 +492,7 @@ Then open **http://localhost:5000** in your browser.
 | `GET` | `/api/overview` | Comprehensive database overview |
 | `POST` | `/api/load` | Load a table as the working dataset `{"table": "employees"}` |
 | `POST` | `/api/query` | Execute a SQL query `{"query": "SELECT * FROM employees"}` |
+| `POST` | `/api/query/validate` | Validate a SQL statement against the schema `{"query": "SELECT ..."}` |
 | `POST` | `/api/load-query` | Load query results as the working dataset |
 | `GET` | `/api/columns/<table>/types` | Semantic column types for a table |
 | `GET` | `/api/relationships` | Foreign-key relationships across tables |
@@ -500,15 +507,26 @@ Then open **http://localhost:5000** in your browser.
 | `GET` | `/api/profile/list` | List captured profiles |
 | `POST` | `/api/profile/compare` | Compare two profiles `{"a": ..., "b": ...}` |
 | `POST` | `/api/settings` | Update DB safety settings `{"read_only": false, "timeout": 30}` |
+| `POST` | `/api/synthesize` | Generate relational deep features `{"table": "employees", "include_counts": true}` |
+| `GET` | `/api/experiments` | List recorded training experiments |
+| `GET` | `/api/experiments/champion` | Get the current champion experiment |
+| `POST` | `/api/experiments/<id>/champion` | Set an experiment as champion |
+| `POST` | `/api/experiments/compare` | Compare two experiments `{"a": ..., "b": ...}` |
+| `DELETE` | `/api/experiments/<id>` | Delete an experiment |
 | `POST` | `/api/preprocess` | Apply preprocessing operations `{"operations": [{"op": "dropna"}]}` |
 | `GET` | `/api/preprocess-summary` | Get preprocessing summary |
 | `POST` | `/api/save-preprocessed-db` | Save preprocessed dataset as a new database |
 | `POST` | `/api/analyze` | Run analysis `{"type": "summary", "target_column": "salary"}` (`type` can be `summary`/`correlations`/`insights`/`target`/`health`) |
+| `POST` | `/api/anomaly/detect` | Detect anomalies `{"table": "employees", "contamination": 0.1}` |
+| `POST` | `/api/monitor/capture` | Capture a feature-distribution reference from loaded data |
+| `POST` | `/api/monitor/check` | Compare a live table against the reference `{"table": "sales"}` (PSI drift) |
 | `POST` | `/api/train` | Start async training job `{"target_column": "salary", "task_type": null, "tuning": "quick"}` → returns `job_id` |
 | `GET` | `/api/train/status/<job_id>` | Poll training job status, progress, and results |
 | `POST` | `/api/train/cancel/<job_id>` | Cancel a running training job |
 | `GET` | `/api/model-info` | Get trained model information |
 | `POST` | `/api/predict` | Make predictions `{"data": [{"age": 30, ...}]}` |
+| `POST` | `/api/explain/prediction` | Explain a single prediction by feature contributions `{"data": {...}, "top_n": 5}` |
+| `POST` | `/api/explain/whatif` | Re-predict after changing one feature `{"data": {...}, "feature": "years_experience", "value": 15}` |
 | `POST` | `/api/predict/table` | Batch-predict every row of a table `{"table": "employees"}` |
 | `POST` | `/api/predict/current` | Batch-predict the currently loaded dataset |
 | `POST` | `/api/predict/upload` | Upload a CSV of features and batch-predict them |

@@ -225,6 +225,22 @@ function populateTableSelect(tables) {
     if (jt) {
         jt.innerHTML = tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     }
+    // Deep-features base table
+    const dft = document.getElementById('deepfeat-table');
+    if (dft) {
+        dft.innerHTML = '<option value="">Select a base table...</option>' +
+            tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    }
+    // Anomaly detection + model monitoring table selects
+    for (const id of ['anomaly-table', 'monitor-table']) {
+        const s = document.getElementById(id);
+        if (s) {
+            const cur = s.value;
+            s.innerHTML = '<option value="">Loaded data / select table...</option>' +
+                tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+            if (cur) s.value = cur;
+        }
+    }
 }
 
 // ============ CSV / chart helpers ============
@@ -399,6 +415,88 @@ function renderHealthReport(h) {
         const items = Object.entries(h.class_balance).map(([k, v]) => ({ label: k, value: v.count }));
         html += svgBarChart(items, { title: 'Class Balance (counts)', color: '#f59e0b' });
     }
+    return html;
+}
+
+// ============ Render helpers: SQL validation / anomaly / explain / drift ============
+
+function renderValidation(v) {
+    if (!v) return '';
+    if (v.valid) {
+        let h = `<p class="hint" style="color:var(--success)">✔ Valid ${escapeHtml(v.statement_type || '')} statement.</p>`;
+        if (v.warnings && v.warnings.length) {
+            h += '<h4>Warnings</h4><ul class="warning-list">' + v.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('') + '</ul>';
+        }
+        if (v.notes && v.notes.length) {
+            h += '<h4>Notes</h4><ul class="warning-list">' + v.notes.map(n => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
+        }
+        return h;
+    }
+    let h = `<p class="hint" style="color:var(--danger)">✖ Invalid statement</p>`;
+    if (v.errors && v.errors.length) {
+        h += '<ul class="warning-list">' + v.errors.map(e => `<li style="color:var(--danger)">${escapeHtml(e)}</li>`).join('') + '</ul>';
+    }
+    return h;
+}
+
+function renderAnomaly(an) {
+    if (!an) return '';
+    let html = `<div class="health-summary">`;
+    html += `<div class="health-card"><div class="cell-label">Rows</div><div class="cell-value">${an.total}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Anomalies</div><div class="cell-value">${an.n_anomalies}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Rate</div><div class="cell-value">${(an.summary.anomaly_rate * 100).toFixed(1)}%</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Features</div><div class="cell-value">${an.features.length}</div></div>`;
+    html += '</div>';
+
+    if (an.importance && an.importance.length) {
+        html += svgBarChart(an.importance.slice(0, 10).map(i => ({ label: i.feature, value: i.importance })),
+            { title: 'Anomaly Feature Importance', color: '#ef4444' });
+    }
+
+    const data = an.data || [];
+    html += `<p class="hint">Flagged via the ${escapeHtml((an.summary.flag_column || 'is_anomaly'))} column (${an.n_anomalies} rows)</p>`;
+    const cols = an.features.concat([an.summary.score_column, an.summary.flag_column]);
+    html += renderTable(data.slice(0, 50), cols);
+    return html;
+}
+
+function renderExplain(ex) {
+    if (!ex) return '';
+    let html = `<strong>${escapeHtml(ex.best_model)}</strong> — prediction: <strong>${escapeHtml(formatJson(ex.prediction))}</strong><br>`;
+    html += `<p class="hint">Base <code>${escapeHtml(ex.target_column)}</code> = ${escapeHtml(formatJson(ex.base_prediction))}</p>`;
+    if (ex.contributions && ex.contributions.length) {
+        html += '<h4>Feature contributions (higher = pushes prediction up)</h4><div class="table-container"><table class="dataframe"><thead><tr><th>Feature</th><th>Kind</th><th>Value</th><th>Typical</th><th>Contribution</th></tr></thead><tbody>';
+        for (const c of ex.contributions) {
+            html += `<tr><td>${escapeHtml(c.feature)}</td><td>${escapeHtml(c.kind || '')}</td><td>${escapeHtml(formatJson(c.value))}</td><td>${escapeHtml(formatJson(c.typical))}</td><td>${escapeHtml(formatJson(c.contribution))}</td></tr>`;
+        }
+        html += '</tbody></table></div>';
+    }
+    return html;
+}
+
+function renderWhatIf(wi) {
+    if (!wi) return '';
+    const arrow = wi.changed ? '→' : '=';
+    return `<strong>What-if: ${escapeHtml(wi.feature)} = ${escapeHtml(formatJson(wi.value))}</strong><br>` +
+        `<p>Base prediction: <code>${escapeHtml(formatJson(wi.base_prediction_label))}</code> ${arrow} New: <code>${escapeHtml(formatJson(wi.new_prediction_label))}</code></p>` +
+        `<p class="hint">${wi.changed ? 'The prediction changed.' : 'The prediction did not change.'}</p>`;
+}
+
+function renderDrift(dr) {
+    if (!dr) return '';
+    let html = `<div class="health-summary">`;
+    html += `<div class="health-card"><div class="cell-label">Overall</div><div class="cell-value">${escapeHtml(dr.overall_status)}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Drifted</div><div class="cell-value">${dr.n_drifted}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Moderate</div><div class="cell-value">${dr.n_moderate}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Max PSI</div><div class="cell-value">${formatJson(dr.max_psi)}</div></div>`;
+    html += '</div>';
+    html += `<p class="hint">Reference: ${dr.rows_reference} rows vs live: ${dr.rows_live} rows. PSI &gt; ${dr.drift_threshold} = drift, ${dr.moderate_threshold}–${dr.drift_threshold} = moderate.</p>`;
+    html += '<div class="table-container"><table class="dataframe"><thead><tr><th>Feature</th><th>PSI</th><th>Status</th><th>Message</th></tr></thead><tbody>';
+    for (const f of dr.features) {
+        const cls = f.status === 'drift' ? 'var(--danger)' : (f.status === 'moderate' ? 'var(--warning)' : '');
+        html += `<tr><td>${escapeHtml(f.feature)}</td><td>${f.psi != null ? formatJson(f.psi) : '-'}</td><td style="color:${cls || 'inherit'}">${escapeHtml(f.status)}</td><td>${f.message ? escapeHtml(f.message) : ''}</td></tr>`;
+    }
+    html += '</tbody></table></div>';
     return html;
 }
 
@@ -946,6 +1044,9 @@ document.getElementById('btn-llm-sql').addEventListener('click', async (e) => {
         if (result.explanation) {
             html += `<br><br><strong>Explanation:</strong><br>${escapeHtml(result.explanation)}`;
         }
+        if (result.validation) {
+            html += `<br><br><strong>Validation:</strong><br>${renderValidation(result.validation)}`;
+        }
         document.getElementById('llm-result').innerHTML = html;
     } catch (err) {
         showToast(err.message, 'error');
@@ -1178,6 +1279,107 @@ document.getElementById('btn-compare-profiles').addEventListener('click',async e
 document.getElementById('btn-save-settings').addEventListener('click',async e=>{const _b=e.currentTarget;setLoading(_b,true);
   try{const p={read_only:document.getElementById('read-only-flag').checked};const to=document.getElementById('query-timeout').value;if(to)p.timeout=Number(to);
     const res=await api('/api/settings','POST',p);showToast(`Settings: read-only=${res.read_only}, timeout=${res.timeout??'none'}`,'success');}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+
+// ----- Features 3-6: SQL validation / anomaly / explain / drift -----
+
+document.getElementById('btn-validate-sql').addEventListener('click', async (e) => {
+    const q = document.getElementById('data-query').value.trim();
+    if (!q) { showToast('Enter a SQL query to validate.', 'error'); return; }
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        const res = await api('/api/query/validate', 'POST', { query: q });
+        document.getElementById('validate-result').innerHTML = renderValidation(res.validation);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+document.getElementById('btn-anomaly-detect').addEventListener('click', async (e) => {
+    const t = document.getElementById('anomaly-table').value;
+    const cont = parseFloat(document.getElementById('anomaly-cont').value || '0.1');
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        const body = { method: 'isolation_forest', contamination: cont };
+        if (t) body.table = t;
+        const res = await api('/api/anomaly/detect', 'POST', body);
+        document.getElementById('anomaly-result').innerHTML = renderAnomaly(res.anomaly);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+document.getElementById('btn-explain-pred').addEventListener('click', async (e) => {
+    const dataText = document.getElementById('explain-data').value.trim();
+    if (!dataText) { showToast('Enter a JSON record to explain.', 'error'); return; }
+    let row;
+    try { row = JSON.parse(dataText); } catch (err) { showToast('Invalid JSON.', 'error'); return; }
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        const res = await api('/api/explain/prediction', 'POST', { data: row, top_n: 6 });
+        document.getElementById('explain-result').innerHTML = renderExplain(res.explanation);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+document.getElementById('btn-whatif').addEventListener('click', async (e) => {
+    const dataText = document.getElementById('explain-data').value.trim();
+    const feature = document.getElementById('whatif-feature').value.trim();
+    const valueText = document.getElementById('whatif-value').value.trim();
+    if (!dataText || !feature) { showToast('Provide a JSON record and the feature to change.', 'error'); return; }
+    let row, value;
+    try {
+        row = JSON.parse(dataText);
+        value = JSON.parse(valueText);
+    } catch (err) { showToast('JSON data / value must be valid JSON.', 'error'); return; }
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        const res = await api('/api/explain/whatif', 'POST', { data: row, feature, value });
+        document.getElementById('explain-result').innerHTML += '<hr>' + renderWhatIf(res.whatif);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+document.getElementById('btn-monitor-capture').addEventListener('click', async (e) => {
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        const res = await api('/api/monitor/capture', 'POST', {});
+        document.getElementById('monitor-status').innerHTML =
+            `<p class="hint" style="color:var(--success)">✔ Reference captured from ${res.rows} rows.</p>`;
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+document.getElementById('btn-monitor-check').addEventListener('click', async (e) => {
+    const t = document.getElementById('monitor-table').value;
+    if (!t) { showToast('Select a table to monitor.', 'error'); return; }
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        const res = await api('/api/monitor/check', 'POST', { table: t });
+        document.getElementById('monitor-result').innerHTML = renderDrift(res.drift);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+// ----- Schema tab: relational deep features -----
+document.getElementById('btn-synthesize').addEventListener('click',async e=>{const t=document.getElementById('deepfeat-table').value;if(!t)return showToast('Select a base table.','error');
+  const _b=e.currentTarget;setLoading(_b,true);
+  try{const res=await api('/api/synthesize','POST',{table:t,include_counts:document.getElementById('deepfeat-counts').checked,include_aggregates:document.getElementById('deepfeat-aggs').checked});
+    const sum=res.summary||{};
+    let h=`<strong>Generated ${res.columns.length} columns (${sum.features?sum.features.length:0} deep features)</strong><br>`;
+    if(sum.features&&sum.features.length){h+='<h4>Aggregations</h4><div class="table-container"><table class="dataframe"><thead><tr><th>Feature</th><th>Child</th><th>Op</th><th>Column</th></tr></thead><tbody>';
+      sum.features.forEach(f=>{h+=`<tr><td><code>${escapeHtml(f.name)}</code></td><td>${escapeHtml(f.child)}</td><td>${escapeHtml(f.op)}</td><td>${f.column?escapeHtml(f.column):'-'}</td></tr>`;});h+='</tbody></table></div>';}
+    document.getElementById('deepfeat-result').innerHTML=h+renderTable(res.data||[],res.columns);}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
+
+// ----- Schema tab: experiments & champion -----
+async function refreshExperiments(){
+  try{const res=await api('/api/experiments');const ex=res.experiments||[];const el=document.getElementById('experiments-list');
+    const champ=(await api('/api/experiments/champion')).champion;
+    document.getElementById('champion-label').textContent=champ?`Champion: ${champ.best_model} (${champ.target_column})`:'No champion set';
+    if(!ex.length){el.innerHTML='<p class="hint">No experiments yet. Train a model to record one.</p>';return;}
+    el.innerHTML='<div class="table-container"><table class="dataframe"><thead><tr><th>ID</th><th>Source</th><th>Target</th><th>Model</th><th>CV</th><th>Status</th><th></th></tr></thead><tbody>'+
+      ex.map(x=>`<tr><td><code>${escapeHtml(x.id)}</code></td><td>${escapeHtml(x.data_source)}</td><td>${escapeHtml(x.target_column||'')}</td><td>${escapeHtml(x.best_model||'-')}</td><td>${x.best_cv_score!=null?x.best_cv_score.toFixed(4):'-'}</td><td>${escapeHtml(x.status)}</td><td><button class="btn btn-outline btn-sm js-champ" data-id="${escapeHtml(x.id)}">Champion</button></td></tr>`).join('')+
+      '</tbody></table></div>';
+    el.querySelectorAll('.js-champ').forEach(b=>b.addEventListener('click',async()=>{try{await api(`/api/experiments/${encodeURIComponent(b.dataset.id)}/champion`,'POST');showToast('Champion set.','success');await refreshExperiments();}catch(err){showToast(err.message,'error');}}));
+  }catch(e){}}
+document.getElementById('btn-refresh-experiments').addEventListener('click',()=>refreshExperiments());
 
 // ============ Tab switching ============
 

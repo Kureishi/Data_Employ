@@ -8,6 +8,11 @@ from .predictor import Predictor
 from .analyzer import DataAnalyzer
 from .preprocessor import DataPreprocessor
 from .llm_advisor import LLMAdvisor
+from .relational import RelationalFeatureSynthesizer
+from .experiments import ExperimentTracker
+from .sql_validation import SQLValidator
+from .anomaly import AnomalyDetector
+from .model_monitor import ModelMonitor
 
 
 class MLAgent:
@@ -50,6 +55,11 @@ class MLAgent:
         self.analyzer: Optional[DataAnalyzer] = None
         self.preprocessor: Optional[DataPreprocessor] = None
         self.target_column: Optional[str] = None
+        self.synthesizer = RelationalFeatureSynthesizer(self.db)
+        self.experiments = ExperimentTracker()
+        self.validator = SQLValidator(self.db)
+        self.anomaly = AnomalyDetector(random_state=random_state)
+        self.monitor = ModelMonitor()
         self.llm: Optional[LLMAdvisor] = None
 
     # ========== Database Operations ==========
@@ -81,6 +91,10 @@ class MLAgent:
         self.current_df = self.db.execute_query(query)
         self.current_table = f"query: {query[:50]}..."
         return self.current_df
+
+    def validate_sql(self, query: str) -> Dict[str, Any]:
+        """Validate a SQL statement against the schema (read-only safety)."""
+        return self.validator.validate(query, read_only=self.db.read_only)
 
     # ========== SQL-specific helpers (column typing / sampling / joins) ==========
 
@@ -119,6 +133,28 @@ class MLAgent:
                     "to_columns": fk.get("referred_columns", []),
                 })
         return rels
+
+    # ========== Relational deep-feature synthesis (Feature: deep features) ==========
+
+    def synthesize_features(
+        self, base_table: str, max_rows=None, include_counts=True, include_aggregates=True
+    ) -> pd.DataFrame:
+        """Generate deep features by aggregating related tables, and set as current data."""
+        result = self.synthesizer.synthesize(
+            base_table, max_rows=max_rows,
+            include_counts=include_counts, include_aggregates=include_aggregates,
+        )
+        self.current_table = base_table
+        self.current_df = result["data"]
+        self._last_features = result["features"]
+        self._last_feature_joins = result["joins"]
+        return self.current_df
+
+    def get_feature_synthesizer_summary(self) -> Dict[str, Any]:
+        return {
+            "features": getattr(self, "_last_features", []),
+            "joins": getattr(self, "_last_feature_joins", []),
+        }
 
     # ========== Saved query library (Feature 2) ==========
 
@@ -280,6 +316,49 @@ class MLAgent:
         else:
             raise ValueError(f"Unknown analysis type: {analysis_type}")
 
+    def detect_anomalies(
+        self,
+        table: Optional[str] = None,
+        method: str = "isolation_forest",
+        contamination: float = 0.1,
+        features: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Run anomaly detection on a table (or the loaded dataset).
+
+        If table is given, it is loaded first. Returns a dict from
+        AnomalyDetector with score/flag columns, importance, and drivers.
+        """
+        detector = self.anomaly
+        if table:
+            df = self.load_table(table)
+        else:
+            if self.current_df is None:
+                raise RuntimeError("No data loaded. Pass a table name or load data first.")
+            df = self.current_df
+        return detector.detect(
+            df, method=method, contamination=contamination, features=features,
+        )
+
+    def capture_monitor_reference(
+        self, feature_columns: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Capture a reference feature distribution from the loaded dataset
+        (the training data) for drift monitoring."""
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Load the training dataset first.")
+        use = feature_columns or list(self.current_df.columns)
+        return self.monitor.capture_reference(self.current_df, feature_columns=use)
+
+    def monitor_live(self, table: str, feature_columns: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Compare a live table's feature distributions against the reference,
+        computing per-feature PSI drift."""
+        if self.monitor.reference is None:
+            raise RuntimeError(
+                "No reference captured yet. Call capture_monitor_reference() after loading training data."
+            )
+        live = self.db.load_table(table)
+        return self.monitor.monitor(live)
+
     # ========== Model Training ==========
 
     def train(
@@ -323,12 +402,26 @@ class MLAgent:
             random_state=self.random_state,
         )
 
-        results = self.model_selector.select(
-            self.current_df,
-            progress_callback=progress_callback,
-            should_stop=should_stop,
+        data_source = table_name or self.current_table or "loaded_data"
+        eid = self.experiments.start(
+            data_source=data_source,
+            target_column=target_column,
+            task_type=task_type or self.task_type,
             tuning=tuning,
+            meta={"rows": int(len(self.current_df)), "columns": list(self.current_df.columns)},
         )
+        try:
+            results = self.model_selector.select(
+                self.current_df,
+                progress_callback=progress_callback,
+                should_stop=should_stop,
+                tuning=tuning,
+            )
+        except Exception as e:
+            self.experiments.fail(eid, str(e))
+            raise
+        self.experiments.finish(eid, training_results=results)
+        results["experiment"] = eid
         self.predictor = Predictor(self.model_selector)
         return results
 
@@ -361,6 +454,18 @@ class MLAgent:
         if self.predictor is None:
             raise RuntimeError("Model not trained. Call train() first.")
         return self.predictor.predict_single(data)
+
+    def explain_prediction(self, data: Dict[str, Any], top_n: int = 5) -> Dict[str, Any]:
+        """Explain a single prediction by feature contributions."""
+        if self.predictor is None:
+            raise RuntimeError("Model not trained. Call train() first.")
+        return self.predictor.explain_prediction(data, top_n=top_n)
+
+    def what_if(self, data: Dict[str, Any], feature: str, value: Any) -> Dict[str, Any]:
+        """Re-predict after changing one feature (perturbation analysis)."""
+        if self.predictor is None:
+            raise RuntimeError("Model not trained. Call train() first.")
+        return self.predictor.what_if(data, feature, value)
 
     # ========== Model Management ==========
 
@@ -434,7 +539,10 @@ class MLAgent:
         if self.llm is None:
             self.enable_llm()
         overview = self.db.get_database_overview()
-        return self.llm.generate_sql(question, overview["tables"])
+        result = self.llm.generate_sql(question, overview["tables"])
+        if result.get("sql"):
+            result["validation"] = self.validate_sql(result["sql"])
+        return result
 
     def llm_suggest_target(self, preferred: Optional[str] = None) -> Dict[str, Any]:
         """

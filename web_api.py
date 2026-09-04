@@ -64,6 +64,7 @@ def _init_agent_stores(agent: MLAgent) -> None:
         os.makedirs(store_dir, exist_ok=True)
         agent.db.set_query_store(os.path.join(store_dir, f"{slug}_queries.json"))
         agent.db.set_profile_store(os.path.join(store_dir, f"{slug}_profiles.json"))
+        agent.experiments.set_store(os.path.join(store_dir, f"{slug}_experiments.json"))
     except Exception:
         pass
 
@@ -362,6 +363,20 @@ def api_load_query():
         return _error(str(e))
 
 
+@app.route("/api/query/validate", methods=["POST"])
+def api_query_validate():
+    """Validate a SQL statement (schema-aware, read-only) without running it."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        query = data.get("query")
+        if not query:
+            return _error("SQL query is required.")
+        return _success(validation=agent.validate_sql(query))
+    except Exception as e:
+        return _error(str(e))
+
+
 # ========== SQL-specific features (column typing / sampling / joins) ==========
 
 
@@ -610,6 +625,50 @@ def api_analyze():
         return _error(str(e))
 
 
+@app.route("/api/anomaly/detect", methods=["POST"])
+def api_anomaly_detect():
+    """Run unsupervised anomaly detection on a table or the loaded dataset."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        result = agent.detect_anomalies(
+            table=data.get("table"),
+            method=data.get("method", "isolation_forest"),
+            contamination=float(data.get("contamination", 0.1)),
+            features=data.get("features"),
+        )
+        return _success(anomaly=result)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/monitor/capture", methods=["POST"])
+def api_monitor_capture():
+    """Capture a feature-distribution reference from the loaded dataset."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        result = agent.capture_monitor_reference(feature_columns=data.get("features"))
+        return _success(reference=result, rows=result.get("rows"))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/monitor/check", methods=["POST"])
+def api_monitor_check():
+    """Compare a live table's feature distributions against the reference."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        table = data.get("table")
+        if not table:
+            return _error("table is required.")
+        result = agent.monitor_live(table, feature_columns=data.get("features"))
+        return _success(drift=result)
+    except Exception as e:
+        return _error(str(e))
+
+
 # ========== Training ==========
 
 
@@ -635,6 +694,7 @@ def _serialize_training(results: Dict[str, Any]) -> Dict[str, Any]:
         "classification_report": results.get("classification_report"),
         "best_params": results.get("best_params"),
         "tuning": results.get("tuning"),
+        "experiment": results.get("experiment"),
     }
 
 
@@ -772,6 +832,37 @@ def api_predict():
             columns=list(predictions.columns),
             rows=len(predictions),
         )
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/explain/prediction", methods=["POST"])
+def api_explain_prediction():
+    """Explain a single prediction by feature contributions."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        row = data.get("data")
+        top_n = data.get("top_n", 5)
+        if not row:
+            return _error("data field is required (a single JSON object).")
+        return _success(explanation=agent.explain_prediction(row, top_n=top_n))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/explain/whatif", methods=["POST"])
+def api_explain_whatif():
+    """Recompute a prediction after changing one feature (what-if)."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        row = data.get("data")
+        feature = data.get("feature")
+        value = data.get("value")
+        if not row or not feature:
+            return _error("data and feature are required.")
+        return _success(whatif=agent.what_if(row, feature, value))
     except Exception as e:
         return _error(str(e))
 
@@ -948,6 +1039,103 @@ def api_upload_model():
             target_column=agent.target_column,
             model_info=agent.get_model_info(),
         )
+    except Exception as e:
+        return _error(str(e))
+
+
+# ========== Relational deep-feature synthesis ==========
+
+
+@app.route("/api/synthesize", methods=["POST"])
+def api_synthesize():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        table = data.get("table")
+        if not table:
+            return _error("table is required.")
+        df = agent.synthesize_features(
+            table,
+            max_rows=data.get("max_rows"),
+            include_counts=data.get("include_counts", True),
+            include_aggregates=data.get("include_aggregates", True),
+        )
+        return _success(
+            loaded=True, table=table,
+            rows=len(df), columns=list(df.columns),
+            data=_jsonable(df.head(100)),
+            summary=_jsonable(agent.get_feature_synthesizer_summary()),
+        )
+    except Exception as e:
+        return _error(str(e))
+
+
+# ========== Versioned experiments ==========
+
+
+@app.route("/api/experiments", methods=["GET"])
+def api_experiments_list():
+    try:
+        agent = _get_agent()
+        return _success(experiments=_jsonable(agent.experiments.list()))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/<eid>", methods=["GET"])
+def api_experiments_get(eid: str):
+    try:
+        agent = _get_agent()
+        exp = agent.experiments.get(eid)
+        if exp is None:
+            return _error("Experiment not found.", status=404)
+        return _success(experiment=_jsonable(exp))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/<eid>/champion", methods=["POST"])
+def api_experiments_champion(eid: str):
+    try:
+        agent = _get_agent()
+        ok = agent.experiments.set_champion(eid)
+        if not ok:
+            return _error("Experiment not found.", status=404)
+        return _success(champion=agent.experiments.champion())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/champion", methods=["GET"])
+def api_experiments_get_champion():
+    try:
+        agent = _get_agent()
+        return _success(champion=agent.experiments.champion())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/<eid>", methods=["DELETE"])
+def api_experiments_delete(eid: str):
+    try:
+        agent = _get_agent()
+        ok = agent.experiments.delete(eid)
+        if not ok:
+            return _error("Experiment not found.", status=404)
+        return _success(deleted=True)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/compare", methods=["POST"])
+def api_experiments_compare():
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        a, b = data.get("a"), data.get("b")
+        if not a or not b:
+            return _error("Both 'a' and 'b' experiment ids are required.")
+        return _success(diff=_jsonable(agent.experiments.compare(a, b)))
     except Exception as e:
         return _error(str(e))
 

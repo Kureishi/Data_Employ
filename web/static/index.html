@@ -76,7 +76,9 @@
                     <div class="form-row">
                         <textarea id="data-query" placeholder="Or run a custom SQL query: SELECT * FROM employees WHERE salary > 50000" rows="2"></textarea>
                         <button id="btn-run-query" class="btn btn-primary">Run Query</button>
+                        <button id="btn-validate-sql" class="btn btn-outline">Validate SQL</button>
                     </div>
+                    <div id="validate-result" class="data-box"></div>
                     <div id="data-info" class="info-box"></div>
                     <div id="data-preview" class="table-container"></div>
                     <button id="btn-export-data" class="btn btn-outline btn-sm">Export Loaded Data (CSV)</button>
@@ -199,6 +201,19 @@
                     </div>
                     <div id="batch-predict-result" class="data-box"></div>
                 </div>
+                <div class="card">
+                    <h2>Explain Prediction &amp; What-If</h2>
+                    <div class="form-row">
+                        <textarea id="explain-data" placeholder='JSON record to explain: {"age": 30, "years_experience": 5, "education_level": "Bachelor", "dept_id": 1}' rows="3"></textarea>
+                        <button class="btn btn-primary" id="btn-explain-pred">Explain</button>
+                    </div>
+                    <div class="form-row">
+                        <input type="text" id="whatif-feature" placeholder="Feature to change (e.g., years_experience)" />
+                        <input type="text" id="whatif-value" placeholder='New value (JSON, e.g. 15 or "PhD")' />
+                        <button class="btn btn-outline" id="btn-whatif">What-If</button>
+                    </div>
+                    <div id="explain-result" class="data-box"></div>
+                </div>
             </div>
 
             <!-- LLM Tab -->
@@ -289,6 +304,51 @@
                         <button id="btn-compare-profiles" class="btn btn-primary btn-sm">Compare</button>
                     </div>
                     <div id="profile-status" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Relational Deep Features</h2>
+                    <div class="form-row">
+                        <select id="deepfeat-table">
+                            <option value="">Select a base table...</option>
+                        </select>
+                        <label><input type="checkbox" id="deepfeat-counts" checked /> Counts</label>
+                        <label><input type="checkbox" id="deepfeat-aggs" checked /> Aggregates</label>
+                        <button id="btn-synthesize" class="btn btn-primary btn-sm">Synthesize</button>
+                    </div>
+                    <div id="deepfeat-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Experiments &amp; Champion</h2>
+                    <div class="form-row">
+                        <button id="btn-refresh-experiments" class="btn btn-primary btn-sm">Refresh</button>
+                        <span id="champion-label" class="hint"></span>
+                    </div>
+                    <div id="experiments-list" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Anomaly Detection</h2>
+                    <div class="form-row">
+                        <select id="anomaly-table">
+                            <option value="">Loaded data / select table...</option>
+                        </select>
+                        <input type="number" id="anomaly-cont" placeholder="contamination (0.1)" step="0.05" min="0.01" max="0.5" value="0.1" />
+                        <button id="btn-anomaly-detect" class="btn btn-primary btn-sm">Detect</button>
+                    </div>
+                    <div id="anomaly-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Model Monitoring (Drift)</h2>
+                    <div class="form-row">
+                        <button id="btn-monitor-capture" class="btn btn-primary btn-sm">Capture Reference (loaded data)</button>
+                    </div>
+                    <div class="form-row">
+                        <select id="monitor-table">
+                            <option value="">Select a live table...</option>
+                        </select>
+                        <button id="btn-monitor-check" class="btn btn-outline btn-sm">Check Drift</button>
+                    </div>
+                    <div id="monitor-status" class="info-box"></div>
+                    <div id="monitor-result" class="data-box"></div>
                 </div>
                 <div class="card">
                     <h2>Query Safety</h2>
