@@ -4,6 +4,7 @@
 let currentTab = 'data';
 let preprocessQueue = [];
 let connectedTables = [];
+let currentDataSource = null;
 
 // ============ Helpers ============
 
@@ -186,6 +187,7 @@ function renderTablesList(tables) {
     document.querySelectorAll('.table-item').forEach(el => {
         el.addEventListener('click', async () => {
             const table = el.dataset.table;
+            currentDataSource = table;
             try {
                 const res = await api('/api/load', 'POST', { table });
                 const info = document.getElementById('data-info');
@@ -194,6 +196,7 @@ function renderTablesList(tables) {
                 document.getElementById('data-preview').innerHTML = renderTable(res.data, res.columns);
                 showToast(`Loaded ${res.rows} rows from ${table}`, 'success');
                 await refreshState();
+                await autoSuggestTarget();
             } catch (e) {
                 showToast(e.message, 'error');
             }
@@ -240,6 +243,141 @@ function populateTableSelect(tables) {
                 tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
             if (cur) s.value = cur;
         }
+    }
+    // Re-predict (production table) select
+    const rp = document.getElementById('repredict-table-select');
+    if (rp) {
+        const cur = rp.value;
+        rp.innerHTML = '<option value="">Select a table...</option>' +
+            tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+        if (cur) rp.value = cur;
+    }
+}
+
+// ============ Tier 1 efficiency: target suggestion / 1-click auto-train ============
+
+async function autoSuggestTarget() {
+    // Heuristic target-column suggestions on the current data. Populates the
+    // datalist and pre-fills the target input with the top suggestion.
+    try {
+        const res = await api('/api/suggest-targets', 'GET');
+        const suggestions = res.suggestions || [];
+        const dl = document.getElementById('target-options');
+        if (dl) {
+            dl.innerHTML = suggestions.map(s => `<option value="${escapeHtml(s.column)}"></option>`).join('');
+        }
+        if (suggestions.length > 0) {
+            const top = suggestions[0];
+            const targetInput = document.getElementById('train-target');
+            if (targetInput && !targetInput.value.trim()) {
+                targetInput.value = top.column;
+            }
+            const hint = document.getElementById('auto-train-hint');
+            if (hint) {
+                hint.textContent = `Suggested target: ${top.column} (${top.task_type}, CV-score-able)`;
+            }
+        }
+    } catch (e) {
+        // silent — suggestion is best-effort
+    }
+}
+
+// 1-click pipeline: suggest target → auto-prepare → reuse cached experiment if
+// possible (champion-proposal) → otherwise kick off asynchronised training.
+async function runAutoTrain() {
+    const btn = document.getElementById('btn-auto-train');
+    setLoading(btn, true);
+    const hint = document.getElementById('auto-train-hint');
+    try {
+        let target = document.getElementById('train-target').value.trim() || null;
+        const tuning = document.getElementById('train-tuning').value || 'off';
+        const nJobs = getTrainNJobs();
+
+        if (!target) {
+            const res = await api('/api/suggest-targets', 'GET');
+            target = (res.suggestions || [])[0]?.column || null;
+            if (!target) {
+                showToast('Could not infer a target column — enter one manually.', 'error');
+                return;
+            }
+        }
+
+        // 1) Auto-prepare (drop constant / high-cardinality ID columns)
+        if (hint) hint.textContent = `Auto-preparing with target ${target}…`;
+        const prep = await api('/api/auto-prepare', 'POST', { target_column: target });
+        document.getElementById('preprocess-result').innerHTML =
+            renderJson({ auto_prepared: prep.prepared, kept: prep.kept_columns.length, dropped: prep.dropped_columns });
+
+        // 2) Champion-proposal: offer a cached matching experiment instead of retraining.
+        const prop = await api('/api/experiments/propose', 'POST', {
+            data_source: currentDataSource || undefined,
+            target_column: target,
+        });
+        if (prop.found && prop.experiment) {
+            const ex = prop.experiment;
+            const path = ex.model_path;
+            if (path && window.confirm(
+                `A matching trained model already exists for "${target}" (${ex.best_model || 'model'}` +
+                `${ex.best_cv_score != null ? ', CV ' + Number(ex.best_cv_score).toFixed(4) : ''}).\n\nLoad it instead of retraining?`
+            )) {
+                await api('/api/load-model', 'POST', { path });
+                document.getElementById('train-result').innerHTML = renderTrainResults({
+                    best_model: ex.best_model,
+                    task_type: ex.task_type,
+                    target_column: ex.target_column,
+                });
+                showToast('Loaded existing model (champion-proposal).', 'success');
+                if (hint) hint.textContent = 'Reused cached experiment — no retraining needed.';
+                await refreshState();
+                return;
+            }
+        }
+
+        // 3) Otherwise train (auto-prepare already cleaned the data).
+        if (hint) hint.textContent = `Training on auto-prepared data (target: ${target})…`;
+        await startTraining(target, document.getElementById('train-task-type').value || null, tuning, nJobs);
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(btn, false);
+    }
+}
+
+function getTrainNJobs() {
+    const v = document.getElementById('train-njobs').value;
+    const n = parseInt(v, 10);
+    return !v || isNaN(n) || n < 1 ? null : n;
+}
+
+function getTrainEarlyStop() {
+    const v = document.getElementById('train-early-stop').value;
+    const n = parseInt(v, 10);
+    return !v || isNaN(n) || n < 1 ? null : n;
+}
+
+// Start a backend async operation job and poll it to completion.
+async function runOp(operation, params, { progress } = {}) {
+    const res = await api('/api/op/start', 'POST', { operation, params });
+    const jobId = res.job_id;
+    for (;;) {
+        await new Promise(r => setTimeout(r, 800));
+        const st = await api(`/api/op/status/${jobId}`, 'GET');
+        if (progress) progress(st);
+        if (st.status === 'done') return st.result;
+        if (st.status === 'error') throw new Error(st.error || 'Operation failed.');
+    }
+}
+
+// Poll the shared notification drain and surface completion signals as toasts.
+async function pollNotifications() {
+    try {
+        const res = await fetch('/api/notifications');
+        const data = await res.json();
+        for (const n of (data.notifications || [])) {
+            showToast(n.message || `${n.operation} finished`, n.level || 'info');
+        }
+    } catch (e) {
+        // silent — next poll will retry
     }
 }
 
@@ -572,12 +710,14 @@ document.getElementById('btn-load-table').addEventListener('click', async (e) =>
     const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/load', 'POST', { table, limit });
+        currentDataSource = table;
         const info = document.getElementById('data-info');
         info.className = 'info-box success';
         info.innerHTML = `<strong>Loaded table:</strong> ${escapeHtml(table)}<br><strong>Rows:</strong> ${res.rows}<br><strong>Columns:</strong> ${res.columns.join(', ')}`;
         document.getElementById('data-preview').innerHTML = renderTable(res.data, res.columns);
         showToast(`Loaded ${res.rows} rows from ${table}`, 'success');
         await refreshState();
+        await autoSuggestTarget();
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
@@ -595,12 +735,14 @@ document.getElementById('btn-run-query').addEventListener('click', async (e) => 
     const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/load-query', 'POST', { query });
+        currentDataSource = null;
         const info = document.getElementById('data-info');
         info.className = 'info-box success';
         info.innerHTML = `<strong>Query:</strong> <code>${escapeHtml(query)}</code><br><strong>Rows:</strong> ${res.rows}<br><strong>Columns:</strong> ${res.columns.join(', ')}`;
         document.getElementById('data-preview').innerHTML = renderTable(res.data, res.columns);
         showToast(`Loaded ${res.rows} rows from query`, 'success');
         await refreshState();
+        await autoSuggestTarget();
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
@@ -824,7 +966,7 @@ function renderTrainProgress(status, jobId) {
     }
 }
 
-async function startTraining(target, taskType, tuning) {
+async function startTraining(target, taskType, tuning, nJobs) {
     const _btn = document.getElementById('btn-train');
     setLoading(_btn, true);
     document.getElementById('train-result').innerHTML = '';
@@ -833,7 +975,11 @@ async function startTraining(target, taskType, tuning) {
 
     let jobId = null;
     try {
-        const res = await api('/api/train', 'POST', { target_column: target, task_type: taskType, tuning });
+        const payload = { target_column: target, task_type: taskType, tuning };
+        if (nJobs) payload.n_jobs = nJobs;
+        const earlyStop = getTrainEarlyStop();
+        if (earlyStop) payload.early_stop = earlyStop;
+        const res = await api('/api/train', 'POST', payload);
         jobId = res.job_id;
     } catch (err) {
         setLoading(_btn, false);
@@ -887,8 +1033,10 @@ document.getElementById('btn-train').addEventListener('click', () => {
         showToast('Please enter a target column.', 'error');
         return;
     }
-    startTraining(target, taskType, tuning);
+    startTraining(target, taskType, tuning, getTrainNJobs());
 });
+
+document.getElementById('btn-auto-train').addEventListener('click', () => runAutoTrain());
 
 // ============ Prediction ============
 
@@ -1337,6 +1485,60 @@ document.getElementById('btn-whatif').addEventListener('click', async (e) => {
     finally { setLoading(_b, false); }
 });
 
+// ----- Batch what-if (perturb a feature across all loaded rows) -----
+document.getElementById('btn-batch-whatif').addEventListener('click', async (e) => {
+    const feature = document.getElementById('batchwi-feature').value.trim();
+    const valueText = document.getElementById('batchwi-value').value.trim();
+    if (!feature) { showToast('Provide the feature to change.', 'error'); return; }
+    let value;
+    try { value = JSON.parse(valueText); } catch (err) { showToast('Value must be valid JSON.', 'error'); return; }
+    const _b = e.currentTarget; setLoading(_b, true);
+    const box = document.getElementById('batch-whatif-result');
+    box.innerHTML = '<p class="train-progress"><p class="progress-label">Applying what-if across all rows…</p></p>';
+    try {
+        const res = await api('/api/explain/batch-whatif', 'POST', { feature, value });
+        const bw = res.batch_whatif || {};
+        const s = bw.summary || {};
+        let html = `<strong>Batch what-if:</strong> ${escapeHtml(s.feature)} = ${escapeHtml(formatJson(s.value))} across ${s.rows || 0} row(s)<br>`;
+        if (s.task_type === 'classification') {
+            html += `<strong>Rows changed:</strong> ${s.changed_rows || 0} (${formatJson(s.pct_changed)}%)<br>`;
+        } else {
+            html += `<strong>Base mean:</strong> ${formatJson(s.base_mean)} → <strong>New mean:</strong> ${formatJson(s.mean_prediction)}<br>`;
+            html += `<strong>Δ mean prediction:</strong> ${formatJson(s.mean_delta)}<br>`;
+            if (s.std_delta != null) html += `<strong>Δ std:</strong> ${formatJson(s.std_delta)}<br>`;
+        }
+        if (bw.sample && bw.sample.length) {
+            html += `<p class="hint">Sample rows:</p><div class="table-container"><table class="dataframe"><thead><tr><th>Row</th><th>Base</th><th>New</th></tr></thead><tbody>` +
+                bw.sample.map(x => `<tr><td>${x.index}</td><td>${escapeHtml(formatJson(x.base))}</td><td>${escapeHtml(formatJson(x.new))}</td></tr>`).join('') +
+                '</tbody></table></div>';
+        }
+        box.innerHTML = html;
+    } catch (err) { box.innerHTML = ''; showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
+// ----- Re-predict a (changed) production table with drift + anomaly flags -----
+document.getElementById('btn-repredict').addEventListener('click', async (e) => {
+    const table = document.getElementById('repredict-table-select').value;
+    if (!table) { showToast('Select a table to re-score.', 'error'); return; }
+    const limit = document.getElementById('repredict-limit').value || null;
+    const _b = e.currentTarget; setLoading(_b, true);
+    const box = document.getElementById('repredict-result');
+    box.innerHTML = '<p class="train-progress"><p class="progress-label">Re-scoring table…</p></p>';
+    try {
+        const res = await api('/api/repredict', 'POST', { table, limit });
+        lastPredictions = res.predictions;
+        lastPredictColumns = res.columns;
+        window._lastPredictFilename = `${table}_rescored.csv`;
+        let html = renderDrift(res.drift) + renderAnomaly(res.anomaly);
+        html += `<p class="hint">${res.rows} rows re-scored from ${escapeHtml(res.source || table)}.</p>`;
+        html += renderTable(res.predictions, res.columns);
+        box.innerHTML = html;
+        showToast(`Re-scored ${res.rows} rows from ${table}`, 'success');
+    } catch (err) { box.innerHTML = ''; showToast(err.message, 'error'); }
+    finally { setLoading(_b, false); }
+});
+
 document.getElementById('btn-monitor-capture').addEventListener('click', async (e) => {
     const _b = e.currentTarget; setLoading(_b, true);
     try {
@@ -1413,6 +1615,65 @@ document.getElementById('btn-rollback-champion').addEventListener('click', async
   finally { setLoading(_b, false); }
 });
 
+// ----- Schema tab: reusable pipeline recipes -----
+async function refreshRecipes() {
+  try {
+    const res = await api('/api/recipe/list');
+    const recipes = res.recipes || [];
+    const el = document.getElementById('recipe-list');
+    if (!el) return;
+    if (!recipes.length) { el.innerHTML = '<p class="hint">No recipes saved yet. Train a model, then click "Save Recipe" to capture it.</p>'; return; }
+    el.innerHTML = '<div class="table-container"><table class="dataframe"><thead><tr><th>Name</th><th>Target</th><th>Task</th><th>Tuning</th><th></th></tr></thead><tbody>' +
+      recipes.map(r => `<tr><td><code>${escapeHtml(r.name)}</code></td><td>${escapeHtml(r.target_column || '-')}</td><td>${escapeHtml(r.task_type || r.task || '-')}</td><td>${escapeHtml(r.tuning || '-')}</td>` +
+        `<td><button class="btn btn-primary btn-sm js-recipe-apply" data-name="${escapeHtml(r.name)}">Apply</button> ` +
+        `<button class="btn btn-outline btn-sm js-recipe-del" data-name="${escapeHtml(r.name)}">Delete</button></td></tr>`).join('') +
+      '</tbody></table></div>';
+    el.querySelectorAll('.js-recipe-apply').forEach(b => b.addEventListener('click', async (e) => {
+      const _b = e.currentTarget; setLoading(_b, true);
+      try {
+        showToast(`Applying recipe '${b.dataset.name}' — training…`, 'info');
+        await runOp('recipe_apply', { name: b.dataset.name });
+        showToast(`Recipe '${b.dataset.name}' applied and trained successfully.`, 'success');
+        await refreshState();
+      } catch (err) { showToast(err.message, 'error'); }
+      finally { setLoading(_b, false); }
+    }));
+    el.querySelectorAll('.js-recipe-del').forEach(b => b.addEventListener('click', async (e) => {
+      const _b = e.currentTarget; setLoading(_b, true);
+      try {
+        await api(`/api/recipe/delete/${encodeURIComponent(b.dataset.name)}`, 'POST', {});
+        showToast(`Deleted recipe '${b.dataset.name}'`, 'success');
+        await refreshRecipes();
+      } catch (err) { showToast(err.message, 'error'); }
+      finally { setLoading(_b, false); }
+    }));
+  } catch (e) { }
+}
+document.getElementById('btn-recipe-save').addEventListener('click', async (e) => {
+  const _b = e.currentTarget; setLoading(_b, true);
+  try {
+    const name = document.getElementById('recipe-name').value.trim();
+    if (!name) { showToast('Enter a recipe name.', 'error'); return; }
+    const p = {
+      name,
+      auto_prepare: document.getElementById('recipe-auto-prepare').checked,
+    };
+    const target = document.getElementById('train-target').value.trim();
+    if (target) p.target_column = target;
+    const taskType = document.getElementById('train-task-type').value;
+    if (taskType) p.task_type = taskType;
+    const tuning = document.getElementById('train-tuning').value;
+    if (tuning) p.tuning = tuning;
+    const nJobs = getTrainNJobs();
+    if (nJobs) p.n_jobs = nJobs;
+    await api('/api/recipe/save', 'POST', p);
+    showToast(`Recipe '${name}' saved.`, 'success');
+    await refreshRecipes();
+  } catch (err) { showToast(err.message, 'error'); }
+  finally { setLoading(_b, false); }
+});
+document.getElementById('btn-recipe-refresh').addEventListener('click', () => refreshRecipes());
+
 // ============ Tab switching ============
 
 document.querySelectorAll('.tab').forEach(tab => {
@@ -1422,3 +1683,5 @@ document.querySelectorAll('.tab').forEach(tab => {
 // ============ Initial load ============
 
 refreshState();
+refreshRecipes();
+setInterval(pollNotifications, 4000);

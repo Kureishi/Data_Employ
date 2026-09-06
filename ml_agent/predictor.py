@@ -195,6 +195,68 @@ class Predictor:
                 pass
         return pred
 
+    def batch_what_if(self, feature: str, value: Any, df, top_rows: int = 20) -> Dict[str, Any]:
+        """Perturb a feature across a whole dataset and summarise the effect.
+
+        Returns a summary (mean delta for regression, % class-changed for
+        classification) plus a sample of per-row before/after predictions.
+        """
+        if self.model.pipeline is None:
+            raise RuntimeError("Model not trained yet. Call train() first.")
+        required = list(self.model.feature_columns or [])
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing feature columns required by the model: {missing}")
+        if feature not in required:
+            raise ValueError(
+                f"Feature '{feature}' was not used in training. Available: {required}"
+            )
+
+        base = np.asarray(self.model.predict(df))
+        scenario = df.copy()
+        scenario[feature] = value
+        new = np.asarray(self.model.predict(scenario))
+
+        base_decoded = [self._decode_prediction(float(x)) if self._isnum(x) else x for x in base]
+        new_decoded = [self._decode_prediction(float(x)) if self._isnum(x) else x for x in new]
+
+        if self.model.task_type == "classification":
+            changed = [a != b for a, b in zip(base_decoded, new_decoded)]
+            n_changed = int(sum(changed))
+            summary = {
+                "task_type": "classification",
+                "feature": feature,
+                "value": value,
+                "rows": int(len(df)),
+                "changed_rows": n_changed,
+                "pct_changed": round(100.0 * n_changed / len(df), 2) if len(df) else 0.0,
+            }
+        else:
+            base_num = np.asarray([float(x) for x in base])
+            new_num = np.asarray([float(x) for x in new])
+            delta = new_num - base_num
+            summary = {
+                "task_type": "regression",
+                "feature": feature,
+                "value": value,
+                "rows": int(len(df)),
+                "base_mean": round(float(base_num.mean()), 4) if len(base_num) else 0.0,
+                "mean_prediction": round(float(new_num.mean()), 4) if len(new_num) else 0.0,
+                "mean_delta": round(float(delta.mean()), 4) if len(delta) else 0.0,
+                "std_delta": round(float(delta.std()), 4) if len(delta) else 0.0,
+            }
+
+        n = min(top_rows, len(df)) if top_rows else len(df)
+        sample = [
+            {"index": i, "base": base_decoded[i], "new": new_decoded[i]}
+            for i in range(n)
+        ]
+        return {"summary": summary, "sample": sample}
+
+    @staticmethod
+    def _isnum(x) -> bool:
+        return isinstance(x, (int, float, np.integer, np.floating))
+
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the trained model."""
         return {

@@ -25,6 +25,8 @@ class DatabaseProcessor:
         self._queries_path: Optional[str] = None
 
     def _normalize(self, cs: str) -> str:
+        if "://" in cs:
+            return cs
         if cs.endswith((".db", ".sqlite", ".sqlite3")):
             return f"sqlite:///{cs}"
         return cs

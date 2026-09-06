@@ -128,7 +128,7 @@
                             <option value="target">Target Analysis</option>
                             <option value="health">Data Health</option>
                         </select>
-                        <input type="text" id="analyze-target" placeholder="Target column (optional)" />
+                        <input type="text" id="analyze-target" list="target-options" placeholder="Target column (optional)" />
                         <button class="btn btn-primary" id="btn-analyze">Analyze</button>
                     </div>
                     <div id="analyze-result" class="data-box"></div>
@@ -140,7 +140,8 @@
                 <div class="card">
                     <h2>Train Model</h2>
                     <div class="form-row">
-                        <input type="text" id="train-target" placeholder="Target column (e.g., salary)" />
+                        <input type="text" id="train-target" list="target-options" placeholder="Target column (e.g., salary)" />
+                        <datalist id="target-options"></datalist>
                         <select id="train-task-type">
                             <option value="">Auto-detect</option>
                             <option value="regression">Regression</option>
@@ -151,7 +152,13 @@
                             <option value="quick" selected>Quick Tuning</option>
                             <option value="full">Full Tuning</option>
                         </select>
+                        <input type="number" id="train-njobs" min="1" max="64" placeholder="CPU cores" title="CPU cores for model search & tuning (blank = auto / 1)" />
+                        <input type="number" id="train-early-stop" min="1" placeholder="Early-stop" title="Stop model search if the best score has not improved after this many consecutive models (3+ tried)" />
                         <button class="btn btn-primary" id="btn-train">Train Model</button>
+                    </div>
+                    <div class="form-row" style="align-items:center">
+                        <button class="btn btn-success" id="btn-auto-train" title="Suggest target → auto-prepare → reuse cached model if possible → train">⚡ Auto-Train (1-click)</button>
+                        <div id="auto-train-hint" class="hint"></div>
                     </div>
                     <div id="train-progress" class="train-progress"></div>
                     <div id="train-result" class="data-box"></div>
@@ -213,6 +220,27 @@
                         <button class="btn btn-outline" id="btn-whatif">What-If</button>
                     </div>
                     <div id="explain-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Batch What-If</h2>
+                    <div class="form-row">
+                        <input type="text" id="batchwi-feature" placeholder="Feature to change across all rows (e.g., years_experience)" />
+                        <input type="text" id="batchwi-value" placeholder='New value (JSON, e.g. 15 or "PhD")' />
+                        <button class="btn btn-primary" id="btn-batch-whatif">Apply Across Data</button>
+                    </div>
+                    <div id="batch-whatif-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Re-Predict Production Table</h2>
+                    <div class="form-row">
+                        <select id="repredict-table-select">
+                            <option value="">Select a table...</option>
+                        </select>
+                        <input type="number" id="repredict-limit" placeholder="Row limit (blank = all)" min="1" />
+                        <button class="btn btn-primary" id="btn-repredict">Re-Score Table</button>
+                    </div>
+                    <p class="hint">Scores every row with the trained model, flags feature drift vs. the training reference (PSI), and highlights anomalous rows.</p>
+                    <div id="repredict-result" class="data-box"></div>
                 </div>
             </div>
 
@@ -350,6 +378,17 @@
                     </div>
                     <div id="monitor-status" class="info-box"></div>
                     <div id="monitor-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Reusable Pipeline Recipes</h2>
+                    <div class="form-row">
+                        <input type="text" id="recipe-name" placeholder="Recipe name (e.g., sales_forecast)" />
+                        <label><input type="checkbox" id="recipe-auto-prepare" /> Auto-prepare</label>
+                        <button id="btn-recipe-save" class="btn btn-primary btn-sm">Save Recipe</button>
+                        <button id="btn-recipe-refresh" class="btn btn-outline btn-sm">Refresh</button>
+                    </div>
+                    <div id="recipe-list" class="data-box"></div>
+                    <p class="hint">A recipe captures the current data source + preprocessing + training config so it can be reproduced later on the same or updated data.</p>
                 </div>
                 <div class="card">
                     <h2>Query Safety</h2>

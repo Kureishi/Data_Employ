@@ -15,6 +15,7 @@ from .experiments import ExperimentTracker
 from .sql_validation import SQLValidator
 from .anomaly import AnomalyDetector
 from .model_monitor import ModelMonitor
+from .recipes import RecipeStore
 from .cli import build_parser, run_cli, main
 
 __version__ = "1.3.0"
@@ -22,6 +23,6 @@ __all__ = [
     "MLAgent", "DatabaseProcessor", "ModelSelector", "Predictor", "DataAnalyzer",
     "DataPreprocessor", "LLMAdvisor", "LLMAdvisorError", "create_llm_advisor",
     "RelationalFeatureSynthesizer", "ExperimentTracker", "SQLValidator",
-    "AnomalyDetector", "ModelMonitor",
+    "AnomalyDetector", "ModelMonitor", "RecipeStore",
     "build_parser", "run_cli", "main",
 ]

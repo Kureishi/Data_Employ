@@ -1,6 +1,7 @@
 """Main ML Agent orchestrator."""
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 from .database import DatabaseProcessor
@@ -14,6 +15,7 @@ from .experiments import ExperimentTracker
 from .sql_validation import SQLValidator
 from .anomaly import AnomalyDetector
 from .model_monitor import ModelMonitor
+from .recipes import RecipeStore
 
 
 class MLAgent:
@@ -62,7 +64,18 @@ class MLAgent:
         self.validator = SQLValidator(self.db)
         self.anomaly = AnomalyDetector(random_state=random_state)
         self.monitor = ModelMonitor()
+        self.n_jobs: int = 1
+        self._analysis_cache: Dict[str, Any] = {}
+        self._suggested_targets: List[Dict[str, Any]] = []
+        self._cache_token: Optional[str] = None
         self.llm: Optional[LLMAdvisor] = None
+
+        # Recipe / reproducibility state
+        self.recipes = RecipeStore()
+        self._last_operations: List[Dict[str, Any]] = []
+        self._last_synth_base: Optional[str] = None
+        self._last_synth_counts: bool = True
+        self._last_synth_aggs: bool = True
 
     # ========== Database Operations ==========
 
@@ -82,6 +95,7 @@ class MLAgent:
         """Load a table into memory."""
         self.current_table = table_name
         self.current_df = self.db.load_table(table_name, limit)
+        self._invalidate_analysis_cache()
         return self.current_df
 
     def execute_query(self, query: str) -> pd.DataFrame:
@@ -92,6 +106,7 @@ class MLAgent:
         """Load query results as the current working dataset."""
         self.current_df = self.db.execute_query(query)
         self.current_table = f"query: {query[:50]}..."
+        self._invalidate_analysis_cache()
         return self.current_df
 
     def validate_sql(self, query: str) -> Dict[str, Any]:
@@ -114,6 +129,7 @@ class MLAgent:
         )
         self.current_table = table
         self.current_df = df
+        self._invalidate_analysis_cache()
         return df
 
     def load_auto_join(self, tables: List[str], join_type: str = "inner") -> pd.DataFrame:
@@ -121,6 +137,7 @@ class MLAgent:
         df = self.db.load_auto_join(tables, join_type)
         self.current_table = "+".join(tables)
         self.current_df = df
+        self._invalidate_analysis_cache()
         return df
 
     def get_relationships(self) -> List[Dict[str, Any]]:
@@ -148,8 +165,12 @@ class MLAgent:
         )
         self.current_table = base_table
         self.current_df = result["data"]
+        self._invalidate_analysis_cache()
         self._last_features = result["features"]
         self._last_feature_joins = result["joins"]
+        self._last_synth_base = base_table
+        self._last_synth_counts = include_counts
+        self._last_synth_aggs = include_aggregates
         return self.current_df
 
     def get_feature_synthesizer_summary(self) -> Dict[str, Any]:
@@ -186,6 +207,116 @@ class MLAgent:
     def compare_profiles(self, a: str, b: str) -> Dict[str, Any]:
         return self.db.compare_profiles(a, b)
 
+    # ========== Reusable pipeline recipes (Feature: recipe) ==========
+
+    def set_recipe_store(self, path: str) -> None:
+        self.recipes.set_store(path)
+
+    def save_recipe(
+        self,
+        name: str,
+        description: str = "",
+        target: Optional[str] = None,
+        task_type: Optional[str] = None,
+        tuning: Optional[str] = None,
+        n_jobs: Optional[int] = None,
+        auto_prepare: bool = False,
+    ) -> str:
+        """Capture the current data source + preprocessing as a reusable recipe.
+
+        The recipe stores the table (or relational synthesis config) that
+        produced the current dataset, the exact preprocessing operations, and
+        the training configuration, so it can be reproduced later.
+        """
+        synth = None
+        if getattr(self, "_last_synth_base", None):
+            synth = {
+                "base_table": self._last_synth_base,
+                "include_counts": self._last_synth_counts,
+                "include_aggregates": self._last_synth_aggs,
+            }
+        if synth is None and not self.current_table:
+            raise RuntimeError(
+                "No data source available. Load a table or synthesize features first."
+            )
+        source = synth["base_table"] if synth else self.current_table
+        recipe = {
+            "name": name or time.strftime("recipe_%Y%m%d_%H%M%S"),
+            "description": description,
+            "data_source": source,
+            "synth": synth,
+            "preprocessing": getattr(self, "_last_operations", []),
+            "target": target or self.target_column,
+            "task_type": task_type or self.task_type,
+            "tuning": tuning,
+            "n_jobs": n_jobs,
+            "auto_prepare": bool(auto_prepare),
+        }
+        return self.recipes.save(recipe)
+
+    def list_recipes(self) -> List[Dict[str, Any]]:
+        return self.recipes.list()
+
+    def get_recipe(self, name: str) -> Optional[Dict[str, Any]]:
+        return self.recipes.get(name)
+
+    def delete_recipe(self, name: str) -> bool:
+        return self.recipes.delete(name)
+
+    def apply_recipe(
+        self,
+        name: str,
+        target: Optional[str] = None,
+        tuning: Optional[str] = None,
+        n_jobs: Optional[int] = None,
+        should_stop: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Reproduce a saved recipe on its data source and train a fresh model.
+
+        Reloads the source (table or relational synthesis), re-applies the
+        stored preprocessing operations, optionally auto-prepares, and trains
+        with the recipe's (or overridden) target/tuning.
+        """
+        recipe = self.recipes.get(name)
+        if recipe is None:
+            raise ValueError(f"Recipe '{name}' not found. Save it first.")
+
+        synth = recipe.get("synth")
+        if synth and synth.get("base_table"):
+            self.synthesize_features(
+                synth["base_table"],
+                include_counts=synth.get("include_counts", True),
+                include_aggregates=synth.get("include_aggregates", True),
+            )
+        elif recipe.get("data_source"):
+            self.load_table(recipe["data_source"])
+        else:
+            raise RuntimeError("Recipe has no data source.")
+
+        operations = recipe.get("preprocessing") or []
+        if operations:
+            self.apply_preprocessing(operations)
+
+        tgt = target or recipe.get("target")
+        if not tgt:
+            raise RuntimeError(
+                "Recipe has no target column. Provide one via 'target'."
+            )
+        if recipe.get("auto_prepare"):
+            self.auto_prepare(tgt)
+
+        tuning_val = tuning if tuning is not None else recipe.get("tuning")
+        n_jobs_val = n_jobs if n_jobs is not None else recipe.get("n_jobs")
+        results = self.train(
+            target_column=tgt,
+            task_type=recipe.get("task_type"),
+            tuning=tuning_val,
+            n_jobs=n_jobs_val,
+            should_stop=should_stop,
+        )
+        results["recipe"] = name
+        return results
+
     # ========== Preprocessing Operations ==========
 
     def preprocess(self, df: Optional[pd.DataFrame] = None) -> DataPreprocessor:
@@ -219,6 +350,7 @@ class MLAgent:
             raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
 
         pre = self.preprocess(self.current_df)
+        ops_applied = []
         for op in operations:
             op_copy = dict(op)
             op_name = op_copy.pop("op")
@@ -226,8 +358,11 @@ class MLAgent:
             if method is None:
                 raise ValueError(f"Unknown preprocessing operation: {op_name}")
             method(**op_copy)
+            ops_applied.append({"op": op_name, **op_copy})
 
+        self._last_operations = ops_applied
         self.current_df = pre.get_data()
+        self._invalidate_analysis_cache()
         return self.current_df
 
     def get_preprocessing_summary(self) -> Dict[str, Any]:
@@ -235,6 +370,49 @@ class MLAgent:
         if self.preprocessor is None:
             return {"operations": [], "total_operations": 0}
         return self.preprocessor.get_summary()
+
+    def auto_prepare(self, target_column: Optional[str] = None) -> Dict[str, Any]:
+        """Best-effort automatic data preparation.
+
+        Drops constant columns and high-cardinality ID/object columns (that are
+        not the target) so the trainer doesn't waste time on them. Missing values
+        are handled upstream by the model preprocessing pipeline.
+        """
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
+
+        df = self.current_df
+        target = target_column or self.target_column
+        dropped = []
+        keep = []
+        row_count = len(df)
+
+        for col in df.columns:
+            s = df[col]
+            nunique = s.nunique(dropna=False)
+            # Constant column (no signal) — drop unless it's the target
+            if nunique <= 1:
+                if col != target:
+                    dropped.append({"column": col, "reason": "constant"})
+                    continue
+            # High-cardinality object column (~ID / free text) — drop unless target
+            elif (not pd.api.types.is_numeric_dtype(s.dtype)) and nunique > max(100, int(len(s) * 0.95)):
+                if col != target:
+                    dropped.append({"column": col, "reason": "high-cardinality"})
+                    continue
+            keep.append(col)
+
+        if keep != list(df.columns):
+            self.current_df = df[keep]
+            self._invalidate_analysis_cache()
+
+        return {
+            "prepared": True,
+            "rows": row_count,
+            "kept_columns": keep,
+            "dropped_columns": dropped,
+            "target_column": target,
+        }
 
     def save_preprocessed_db(
         self,
@@ -290,13 +468,15 @@ class MLAgent:
 
     # ========== Analysis Operations ==========
 
-    def analyze(self, target_column: Optional[str] = None, analysis_type: str = "summary") -> Dict[str, Any]:
+    def analyze(self, target_column: Optional[str] = None, analysis_type: str = "summary",
+                use_cache: bool = True) -> Dict[str, Any]:
         """
         Perform data analysis on the current dataset.
 
         Args:
             target_column: Target column for analysis (optional).
-            analysis_type: "summary", "correlations", "insights", or "target".
+            analysis_type: "summary", "correlations", "insights", "health", or "target".
+            use_cache: Whether to reuse a cached result for identical inputs.
 
         Returns:
             Analysis report.
@@ -304,19 +484,26 @@ class MLAgent:
         if self.current_df is None:
             raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
 
+        cache_key = f"{analysis_type}|{target_column}|{self._data_token()}"
+        if use_cache and cache_key in self._analysis_cache:
+            return self._analysis_cache[cache_key]
+
         self.analyzer = DataAnalyzer(self.current_df, target_column or self.target_column)
         if analysis_type == "summary":
-            return self.analyzer.get_summary_report()
+            result = self.analyzer.get_summary_report()
         elif analysis_type == "correlations":
-            return self.analyzer.get_correlations()
+            result = self.analyzer.get_correlations()
         elif analysis_type == "insights":
-            return self.analyzer.get_column_insights()
+            result = self.analyzer.get_column_insights()
         elif analysis_type == "target":
-            return self.analyzer.get_target_analysis()
+            result = self.analyzer.get_target_analysis()
         elif analysis_type == "health":
-            return self.analyzer.get_data_health_report()
+            result = self.analyzer.get_data_health_report()
         else:
             raise ValueError(f"Unknown analysis type: {analysis_type}")
+
+        self._analysis_cache[cache_key] = result
+        return result
 
     def detect_anomalies(
         self,
@@ -371,6 +558,8 @@ class MLAgent:
         progress_callback: Optional[Any] = None,
         should_stop: Optional[Any] = None,
         tuning: Optional[str] = None,
+        n_jobs: Optional[int] = None,
+        early_stop: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Train the best model for the given target column.
@@ -402,6 +591,7 @@ class MLAgent:
             test_size=self.test_size,
             cv_folds=self.cv_folds,
             random_state=self.random_state,
+            n_jobs=n_jobs or self.n_jobs,
         )
 
         data_source = table_name or self.current_table or "loaded_data"
@@ -418,6 +608,7 @@ class MLAgent:
                 progress_callback=progress_callback,
                 should_stop=should_stop,
                 tuning=tuning,
+                early_stop=early_stop,
             )
         except Exception as e:
             self.experiments.fail(eid, str(e))
@@ -479,6 +670,117 @@ class MLAgent:
         result["reloaded"] = reloaded
         return result
 
+    # ========== Caching / smart defaults (Tier 1) ==========
+
+    def _invalidate_analysis_cache(self) -> None:
+        """Drop cached analysis results when the working dataset changes."""
+        self._analysis_cache = {}
+        self._cache_token = None
+
+    def _data_token(self) -> str:
+        """A cheap fingerprint of the current dataset for cache keys."""
+        if self.current_df is None:
+            return "none"
+        import json
+        cols = [str(c) for c in self.current_df.columns]
+        dtypes = [str(self.current_df[c].dtype) for c in self.current_df.columns]
+        return json.dumps([len(self.current_df), cols, dtypes]) + f"|base={self.current_table}"
+
+    def set_n_jobs(self, n_jobs: int) -> None:
+        """Set the default number of parallel workers used for training/tuning."""
+        try:
+            self.n_jobs = max(1, int(n_jobs))
+        except (TypeError, ValueError):
+            self.n_jobs = 1
+
+    def suggest_targets(self, k: int = 5, df: Optional[pd.DataFrame] = None) -> List[Dict[str, Any]]:
+        """Suggest likely target columns for prediction.
+
+        Uses heuristics (dtype, cardinality, name, missing rate) rather than the
+        LLM, so it works offline and instantly. Columns that are obviously IDs,
+        dates, or foreign keys are excluded.
+        """
+        data = df if df is not None else self.current_df
+        if data is None:
+            raise RuntimeError("No data loaded. Call load_table() or provide a DataFrame.")
+
+        token = self._data_token()
+        if token != self._cache_token:
+            self._cache_token = token
+            self._analysis_cache = {}
+
+        id_hint = ("_id", "id", "_key", "key", "uuid", "hash", "code")
+        date_hint = ("_date", "date", "_time", "time", "created", "updated", "_at")
+
+        candidates = []
+        for col in data.columns:
+            name = col.lower()
+            if name.endswith(id_hint) or "_id" in name:
+                continue
+            if any(h in name for h in date_hint):
+                continue
+            s = data[col]
+            nunique = s.nunique()
+            null_rate = float(s.isna().mean())
+
+            # Determine likely task type (mirrors ModelSelector._detect_task_type)
+            if not pd.api.types.is_numeric_dtype(s.dtype):
+                task = "classification"
+            else:
+                if nunique <= 10:
+                    task = "classification"
+                elif pd.api.types.is_integer_dtype(s.dtype) and nunique <= 50:
+                    mn, mx = (int(s.min()), int(s.max())) if nunique else (0, 0)
+                    rng = mx - mn + 1
+                    coverage = (nunique / rng) if rng > 0 else 0
+                    task = "regression" if coverage > 0.5 else "classification"
+                else:
+                    task = "regression"
+
+            # Score: very high cardinality + heavy missing penalised.
+            score = 10.0
+            score -= min(nunique / max(len(s), 1) * 20, 8)
+            score -= null_rate * 20
+            if task == "classification":
+                if 2 <= nunique <= 20:
+                    score += 3
+                elif nunique > 50:
+                    score -= 4
+            target_hint = ("salary", "price", "amount", "score", "rating", "value",
+                          "income", "cost", "label", "class", "target", "outcome")
+            if any(h in name for h in target_hint):
+                score += 2
+
+            candidates.append({
+                "column": col,
+                "task_type": task,
+                "cardinality": int(nunique),
+                "null_rate": round(null_rate, 4),
+                "score": round(score, 3),
+                "dtype": str(s.dtype),
+            })
+
+        candidates.sort(key=lambda c: (-c["score"], c["column"]))
+        self._suggested_targets = candidates[: k if k > 0 else None]
+        return candidates[: k if k > 0 else None]
+
+    def find_experiment(
+        self, data_source: Optional[str] = None, target_column: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return the best previous completed experiment matching the given
+        data source and/or target, or None."""
+        best = None
+        for e in self.experiments.list():
+            if e.get("status") != "done":
+                continue
+            if data_source and e.get("data_source") != data_source:
+                continue
+            if target_column and e.get("target_column") != target_column:
+                continue
+            if best is None or (e.get("best_cv_score") or 0) >= (best.get("best_cv_score") or 0):
+                best = e
+        return best
+
     # ========== Prediction Operations ==========
 
     def predict(self, data: Union[pd.DataFrame, Dict[str, Any], List[Dict[str, Any]]]) -> pd.DataFrame:
@@ -520,6 +822,81 @@ class MLAgent:
         if self.predictor is None:
             raise RuntimeError("Model not trained. Call train() first.")
         return self.predictor.what_if(data, feature, value)
+
+    def batch_what_if(
+        self,
+        feature: str,
+        value: Any,
+        df: Optional[pd.DataFrame] = None,
+        top_rows: int = 20,
+    ) -> Dict[str, Any]:
+        """Perturb a feature across a whole dataset and summarise the effect.
+
+        Returns a summary (mean delta for regression, % class-changed for
+        classification) plus a sample of per-row before/after predictions.
+        """
+        if self.predictor is None:
+            raise RuntimeError("Model not trained. Call train() first.")
+        data = df if df is not None else self.current_df
+        if data is None:
+            raise RuntimeError("No data to test. Pass df or load data first.")
+        return self.predictor.batch_what_if(feature, value, data, top_rows=top_rows)
+
+    def repredict_table(
+        self,
+        table: str,
+        limit: Optional[int] = None,
+        contamination: float = 0.05,
+    ) -> Dict[str, Any]:
+        """Re-score every row of a (likely changed) production table with the
+        trained model, flagging drift against the training reference and rows
+        that look anomalous.
+
+        Returns predictions plus optional drift (PSI) and anomaly summaries.
+        """
+        if self.predictor is None:
+            raise RuntimeError("No trained model to re-score with. Train or load a model first.")
+        if not table:
+            raise ValueError("table is required.")
+
+        live = self.db.load_table(table, limit=limit)
+        predictions = self.predictor.predict(live)
+
+        drift = None
+        try:
+            feats = (
+                self.model_selector.feature_columns
+                if self.model_selector is not None else None
+            )
+            if self.current_df is not None and feats:
+                valid = [f for f in feats if f in self.current_df.columns]
+                if valid:
+                    self.monitor.capture_reference(self.current_df, feature_columns=valid)
+            if self.monitor.reference is not None:
+                drift = self.monitor.monitor(live)
+        except Exception:
+            drift = None
+
+        anomaly = None
+        try:
+            an = self.anomaly.detect(live, contamination=float(contamination))
+            anomaly = {
+                "n_anomalies": an.get("n_anomalies"),
+                "total": an.get("total"),
+                "features": an.get("features"),
+                "importance": an.get("importance"),
+                "top_drivers": an.get("top_drivers"),
+            }
+        except Exception:
+            anomaly = None
+
+        return {
+            "predictions": predictions,
+            "drift": drift,
+            "anomaly": anomaly,
+            "source": f"table:{table}",
+            "rows": int(len(predictions)),
+        }
 
     # ========== Model Management ==========
 

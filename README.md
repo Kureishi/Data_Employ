@@ -19,6 +19,15 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **Anomaly Detection**: Unsupervised Isolation Forest scoring over loaded data or a table, with per-feature importance and per-outlier driver explanations
 - **Prediction Explainability & What-If**: Per-record feature contributions and single-feature perturbation ("what-if") analysis on a trained model
 - **Model Drift Monitoring**: Capture a training-time feature reference (PSI) and compare a live table's distributions to flag drift before it degrades predictions
+- **Suggested Target on Load**: After loading data, heuristic target-column ranking instantly proposes the best column + task type (offline, no LLM needed) and pre-fills the target field
+- **One-Click Auto-Train**: A single button that suggests a target → auto-prepares (drops constant / high-cardinality ID columns) → proposes a cached matching experiment if one exists → otherwise trains the best model
+- **Analysis & Target Caching**: Expensive analysis results are memoized per-dataset fingerprint and invalidated automatically when the data changes
+- **Configurable Parallelism**: `n_jobs` for cross-validation and tuning is tunable (Train tab / API) so users can raise CPU usage when it's safe
+- **Reusable Pipeline Recipes**: Save the current data source + preprocessing + training config as a named recipe, then reproduce it on new/updated data (or retrain) in one click
+- **Re-Predict Production Table**: Re-score a (possibly changed) table with the trained model, flagging per-feature drift (PSI) and anomalous rows in one pass
+- **Early-Stop Model Search**: Stop evaluating candidate models once the best score stops improving after N consecutive models (avoids wasted training time)
+- **Batch What-If**: Perturb one feature across all loaded rows and summarize the effect on predictions (mean delta for regression, % class-change for classification)
+- **Async Everything + Notifications**: Long-running ops (analyze, synthesize, monitor, anomaly, re-predict, recipe-apply) run as background jobs with completion toasts
 - **Automatic Model Selection**: Evaluates 9 regression models and 7 classification models using cross-validation to find the best performer
 - **Hyperparameter Tuning**: Optionally tune the best-selected model with `GridSearchCV` (Full) or `RandomizedSearchCV` (Quick) — Off / Quick / Full
 - **Task Type Auto-Detection**: Automatically determines if the task is regression or classification based on data characteristics
@@ -506,7 +515,7 @@ Then open **http://localhost:5000** in your browser.
 | `POST` | `/api/profile/capture` | Capture a schema/data snapshot `{"name": "snap1"}` |
 | `GET` | `/api/profile/list` | List captured profiles |
 | `POST` | `/api/profile/compare` | Compare two profiles `{"a": ..., "b": ...}` |
-| `POST` | `/api/settings` | Update DB safety settings `{"read_only": false, "timeout": 30}` |
+| `POST` | `/api/settings` | Update DB safety / parallelism settings `{"read_only": false, "timeout": 30, "n_jobs": 4}` |
 | `POST` | `/api/synthesize` | Generate relational deep features `{"table": "employees", "include_counts": true}` |
 | `GET` | `/api/experiments` | List recorded training experiments |
 | `GET` | `/api/experiments/champion` | Get the current champion experiment |
@@ -522,13 +531,25 @@ Then open **http://localhost:5000** in your browser.
 | `POST` | `/api/anomaly/detect` | Detect anomalies `{"table": "employees", "contamination": 0.1}` |
 | `POST` | `/api/monitor/capture` | Capture a feature-distribution reference from loaded data |
 | `POST` | `/api/monitor/check` | Compare a live table against the reference `{"table": "sales"}` (PSI drift) |
-| `POST` | `/api/train` | Start async training job `{"target_column": "salary", "task_type": null, "tuning": "quick"}` → returns `job_id` |
+| `GET` | `/api/suggest-targets` | Ranked heuristic target-column suggestions for the current data (offline, instant) |
+| `POST` | `/api/auto-prepare` | Auto-prepare data `{"target_column": "salary"}` — drops constant / high-cardinality ID columns |
+| `POST` | `/api/experiments/propose` | Find the best cached experiment matching `{"data_source": ..., "target_column": ...}` to reuse instead of retraining |
+| `POST` | `/api/train` | Start async training job `{"target_column": "salary", "task_type": null, "tuning": "quick", "n_jobs": 4, "early_stop": 3}` → returns `job_id` |
 | `GET` | `/api/train/status/<job_id>` | Poll training job status, progress, and results |
 | `POST` | `/api/train/cancel/<job_id>` | Cancel a running training job |
 | `GET` | `/api/model-info` | Get trained model information |
 | `POST` | `/api/predict` | Make predictions `{"data": [{"age": 30, ...}]}` |
 | `POST` | `/api/explain/prediction` | Explain a single prediction by feature contributions `{"data": {...}, "top_n": 5}` |
 | `POST` | `/api/explain/whatif` | Re-predict after changing one feature `{"data": {...}, "feature": "years_experience", "value": 15}` |
+| `POST` | `/api/explain/batch-whatif` | Perturb one feature across all loaded rows `{"feature": "years_experience", "value": 15}` |
+| `POST` | `/api/repredict` | Re-score a table with drift + anomaly flags `{"table": "employees", "limit": 100}` |
+| `POST` | `/api/op/start` | Start an async operation job `{"operation": "recipe_apply", "params": {...}}` → returns `job_id` |
+| `GET` | `/api/op/status/<job_id>` | Poll any async operation job status and result |
+| `GET` | `/api/notifications` | Drain async-job completion notifications as toasts |
+| `POST` | `/api/recipe/save` | Save the current pipeline as a reusable recipe `{"name": "sales_forecast", "target_column": "salary"}` |
+| `GET` | `/api/recipe/list` | List saved recipes |
+| `POST` | `/api/recipe/apply` | Reproduce a recipe synchronously `{"name": "sales_forecast"}` |
+| `POST` | `/api/recipe/delete/<name>` | Delete a saved recipe |
 | `POST` | `/api/predict/table` | Batch-predict every row of a table `{"table": "employees"}` |
 | `POST` | `/api/predict/current` | Batch-predict the currently loaded dataset |
 | `POST` | `/api/predict/upload` | Upload a CSV of features and batch-predict them |

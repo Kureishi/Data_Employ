@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -34,6 +35,13 @@ AGENT: Optional[MLAgent] = None
 # Async training-job registry (id -> job dict)
 TRAIN_JOBS: Dict[str, Dict[str, Any]] = {}
 TRAIN_LOCK = threading.Lock()
+
+# Generic async operation-job registry (for analyze / synthesize / monitor /
+# anomaly / repredict / recipe-apply), plus a short-lived notification queue.
+OP_JOBS: Dict[str, Dict[str, Any]] = {}
+OP_LOCK = threading.Lock()
+NOTIFICATIONS: List[Dict[str, Any]] = []
+MAX_NOTIFICATIONS = 10
 
 # Upload directory for database files
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ml_agent_uploads")
@@ -65,6 +73,7 @@ def _init_agent_stores(agent: MLAgent) -> None:
         agent.db.set_query_store(os.path.join(store_dir, f"{slug}_queries.json"))
         agent.db.set_profile_store(os.path.join(store_dir, f"{slug}_profiles.json"))
         agent.experiments.set_store(os.path.join(store_dir, f"{slug}_experiments.json"))
+        agent.recipes.set_store(os.path.join(store_dir, f"{slug}_recipes.json"))
         agent.models_dir = os.path.join(store_dir, "models")
     except Exception:
         pass
@@ -102,6 +111,156 @@ def _success(**kwargs) -> Response:
 def _df_to_html_table(df: pd.DataFrame, max_rows: int = 100) -> str:
     """Convert a DataFrame to an HTML table string."""
     return df.head(max_rows).to_html(classes="display nowrap", index=False)
+
+
+# ============ Async operation jobs + notifications (Tier 2: async everything) ============
+
+
+def _add_notification(message: str, ntype: str = "info", detail: str = "") -> None:
+    with OP_LOCK:
+        NOTIFICATIONS.append({
+            "message": message,
+            "type": ntype,
+            "detail": detail,
+            "time": time.time(),
+        })
+        if len(NOTIFICATIONS) > MAX_NOTIFICATIONS:
+            del NOTIFICATIONS[: len(NOTIFICATIONS) - MAX_NOTIFICATIONS]
+
+
+def _get_op_handler(op_name: str):
+    return OP_HANDLERS.get(op_name)
+
+
+def _start_op_job(op_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Launch an async operation job. Returns the job record."""
+    global AGENT
+    agent = _get_agent()
+    handler = _get_op_handler(op_name)
+    if handler is None:
+        raise ValueError(f"Unknown operation: {op_name}")
+
+    job_id = f"op_{len(OP_JOBS) + 1}"
+    job: Dict[str, Any] = {
+        "id": job_id,
+        "operation": op_name,
+        "status": "running",
+        "result": None,
+        "error": None,
+    }
+
+    def worker() -> None:
+        try:
+            result = handler(agent, params)
+            with OP_LOCK:
+                job["result"] = result
+            job["status"] = "done"
+            _add_notification(f"{op_name} completed", "success", op_name)
+        except Exception as e:
+            job["status"] = "error"
+            job["error"] = str(e)
+            _add_notification(f"{op_name} failed: {e}", "error", op_name)
+
+    with OP_LOCK:
+        OP_JOBS[job_id] = job
+    threading.Thread(target=worker, daemon=True).start()
+    return job
+
+
+# Handlers: (agent, params) -> JSON-serializable result dict.
+def _op_analyze(agent, params):
+    return {"analysis": _jsonable(agent.analyze(
+        params.get("target_column"), params.get("type", "summary")
+    ))}
+
+
+def _op_anomaly(agent, params):
+    result = agent.detect_anomalies(
+        table=params.get("table") or None,
+        method=params.get("method", "isolation_forest"),
+        contamination=float(params.get("contamination", 0.1)),
+    )
+    return {"anomaly": _jsonable(result)}
+
+
+def _op_synthesize(agent, params):
+    base = params.get("table")
+    if not base:
+        raise ValueError("table is required.")
+    agent.synthesize_features(
+        base,
+        include_counts=bool(params.get("include_counts", True)),
+        include_aggregates=bool(params.get("include_aggregates", True)),
+    )
+    summary = agent.get_feature_synthesizer_summary()
+    return {
+        "summary": summary,
+        "columns": list(agent.current_df.columns),
+        "rows": int(len(agent.current_df)),
+        "data": _jsonable(agent.current_df.head(100)),
+    }
+
+
+def _op_monitor_capture(agent, params):
+    result = agent.capture_monitor_reference()
+    return {"rows": len(agent.current_df) if agent.current_df is not None else 0,
+            "features": result.get("features", [])}
+
+
+def _op_monitor_check(agent, params):
+    table = params.get("table")
+    if not table:
+        raise ValueError("table is required.")
+    return {"drift": _jsonable(agent.monitor_live(table, feature_columns=params.get("features")))}
+
+
+def _op_repredict(agent, params):
+    table = params.get("table")
+    if not table:
+        raise ValueError("table is required.")
+    res = agent.repredict_table(
+        table, limit=params.get("limit"), contamination=float(params.get("contamination", 0.05))
+    )
+    return {
+        "predictions": _jsonable(res["predictions"]),
+        "drift": _jsonable(res["drift"]),
+        "anomaly": res["anomaly"],
+        "rows": res["rows"],
+        "columns": list(res["predictions"].columns),
+    }
+
+
+def _op_recipe_apply(agent, params):
+    name = params.get("name")
+    if not name:
+        raise ValueError("recipe name is required.")
+    results = agent.apply_recipe(
+        name,
+        target=params.get("target"),
+        tuning=params.get("tuning"),
+        n_jobs=params.get("n_jobs"),
+    )
+    return {"training": _serialize_training(results), "recipe": name}
+
+
+def _op_batch_whatif(agent, params):
+    feature = params.get("feature")
+    if not feature:
+        raise ValueError("feature is required.")
+    result = agent.batch_what_if(feature, params.get("value"))
+    return {"batch_whatif": _jsonable(result)}
+
+
+OP_HANDLERS: Dict[str, Any] = {
+    "analyze": _op_analyze,
+    "anomaly": _op_anomaly,
+    "synthesize": _op_synthesize,
+    "monitor_capture": _op_monitor_capture,
+    "monitor_check": _op_monitor_check,
+    "repredict": _op_repredict,
+    "recipe_apply": _op_recipe_apply,
+    "batch_whatif": _op_batch_whatif,
+}
 
 
 # ============ Routes ============
@@ -538,6 +697,85 @@ def api_profile_compare():
         return _error(str(e))
 
 
+# ========== Reusable pipeline recipes ==========
+
+
+@app.route("/api/recipe/save", methods=["POST"])
+def api_recipe_save():
+    """Save the current data source + preprocessing pipeline as a named recipe."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        if not name:
+            return _error("name is required.")
+        saved = agent.save_recipe(
+            name=name,
+            description=data.get("description", ""),
+            target=data.get("target_column"),
+            task_type=data.get("task_type"),
+            tuning=data.get("tuning"),
+            n_jobs=data.get("n_jobs"),
+            auto_prepare=bool(data.get("auto_prepare", False)),
+        )
+        return _success(saved=True, name=saved)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/recipe/list", methods=["GET"])
+def api_recipe_list():
+    try:
+        agent = _get_agent()
+        return _success(recipes=agent.list_recipes())
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/recipe/get/<name>", methods=["GET"])
+def api_recipe_get(name: str):
+    try:
+        agent = _get_agent()
+        r = agent.get_recipe(name)
+        if r is None:
+            return _error("Recipe not found.", status=404)
+        return _success(recipe=r)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/recipe/delete/<name>", methods=["POST"])
+def api_recipe_delete(name: str):
+    try:
+        agent = _get_agent()
+        ok = agent.delete_recipe(name)
+        if not ok:
+            return _error("Recipe not found.", status=404)
+        return _success(deleted=True)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/recipe/apply", methods=["POST"])
+def api_recipe_apply():
+    """Reproduce a saved recipe synchronously (train a fresh model)."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        if not name:
+            return _error("name is required.")
+        results = agent.apply_recipe(
+            name,
+            target=data.get("target_column"),
+            tuning=data.get("tuning"),
+            n_jobs=data.get("n_jobs"),
+        )
+        return _success(training=_serialize_training(results), recipe=name)
+    except Exception as e:
+        return _error(str(e))
+
+
 @app.route("/api/settings", methods=["POST"])
 def api_settings():
     """Update DB query safety settings (read-only mode / timeout)."""
@@ -548,9 +786,15 @@ def api_settings():
             agent.db.read_only = bool(data["read_only"])
         if "timeout" in data:
             agent.db.query_timeout = data.get("timeout")
+        if "n_jobs" in data:
+            try:
+                agent.set_n_jobs(int(data["n_jobs"]))
+            except (TypeError, ValueError):
+                pass
         return _success(
             read_only=agent.db.read_only,
             timeout=agent.db.query_timeout,
+            n_jobs=agent.n_jobs,
         )
     except Exception as e:
         return _error(str(e))
@@ -619,9 +863,44 @@ def api_analyze():
         data = request.get_json(silent=True) or {}
         analysis_type = data.get("type", "summary")
         target = data.get("target_column")
+        use_cache = bool(data.get("use_cache", True))
 
-        result = agent.analyze(target_column=target, analysis_type=analysis_type)
+        result = agent.analyze(target_column=target, analysis_type=analysis_type,
+                               use_cache=use_cache)
         return _success(analysis=result, type=analysis_type)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/suggest-targets", methods=["GET"])
+def api_suggest_targets():
+    """Return ranked heuristic target-column suggestions for the current data."""
+    try:
+        agent = _get_agent()
+        k = request.args.get("k", default=5, type=int)
+        suggestions = agent.suggest_targets(k=k)
+        top = suggestions[0] if suggestions else None
+        return _success(suggestions=suggestions, top=top)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/auto-prepare", methods=["POST"])
+def api_auto_prepare():
+    """Best-effort automatic data preparation (drops constant/high-cardinality)."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        target = data.get("target_column")
+        result = agent.auto_prepare(target_column=target)
+        return _success(
+            prepared=result["prepared"],
+            rows=result["rows"],
+            kept_columns=result["kept_columns"],
+            dropped_columns=result["dropped_columns"],
+            columns=list(agent.current_df.columns),
+            data=_jsonable(agent.current_df.head(100)),
+        )
     except Exception as e:
         return _error(str(e))
 
@@ -695,6 +974,7 @@ def _serialize_training(results: Dict[str, Any]) -> Dict[str, Any]:
         "classification_report": results.get("classification_report"),
         "best_params": results.get("best_params"),
         "tuning": results.get("tuning"),
+        "early_stopped": results.get("early_stopped", False),
         "experiment": results.get("experiment"),
         "model_path": results.get("model_path"),
     }
@@ -710,6 +990,15 @@ def api_train():
         task_type = data.get("task_type")
         table = data.get("table_name")
         tuning = data.get("tuning") if data.get("tuning") in ("off", "quick", "full") else None
+        n_jobs_raw = data.get("n_jobs")
+        n_jobs = int(n_jobs_raw) if n_jobs_raw else agent.n_jobs
+        if n_jobs < 1:
+            n_jobs = 1
+
+        early_stop_raw = data.get("early_stop")
+        early_stop = int(early_stop_raw) if early_stop_raw else None
+        if early_stop is not None and early_stop < 1:
+            early_stop = None
 
         if not target:
             return _error("target_column is required.")
@@ -747,6 +1036,8 @@ def api_train():
                     progress_callback=progress_cb,
                     should_stop=should_stop,
                     tuning=tuning,
+                    n_jobs=n_jobs,
+                    early_stop=early_stop,
                 )
                 job["status"] = "done"
                 job["training"] = _serialize_training(results)
@@ -801,6 +1092,50 @@ def api_train_cancel(job_id: str):
         if job is None:
             return _error("Job not found.", status=404)
         return _success(status=job["status"], message="Cancellation requested. Stopping after the current model…")
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/op/start", methods=["POST"])
+def api_op_start():
+    """Start an async operation job (analyze/synthesize/monitor/anomaly/
+    repredict/recipe-apply/batch-whatif) and return its id immediately."""
+    try:
+        data = request.get_json(silent=True) or {}
+        op_name = data.get("operation")
+        params = data.get("params") or {}
+        job = _start_op_job(op_name, params)
+        return _success(job_id=job["id"], status=job["status"], operation=op_name)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/op/status/<job_id>", methods=["GET"])
+def api_op_status(job_id: str):
+    try:
+        with OP_LOCK:
+            job = OP_JOBS.get(job_id)
+        if job is None:
+            return _error("Operation job not found.", status=404)
+        return jsonify({
+            "job_id": job_id,
+            "operation": job["operation"],
+            "status": job["status"],
+            "error": job["error"],
+            "result": job["result"],
+        })
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/notifications", methods=["GET"])
+def api_notifications():
+    """Drain the most-recent async-job notifications (completion signals)."""
+    try:
+        with OP_LOCK:
+            items = list(NOTIFICATIONS)
+            NOTIFICATIONS.clear()
+        return _success(notifications=items)
     except Exception as e:
         return _error(str(e))
 
@@ -865,6 +1200,47 @@ def api_explain_whatif():
         if not row or not feature:
             return _error("data and feature are required.")
         return _success(whatif=agent.what_if(row, feature, value))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/explain/batch-whatif", methods=["POST"])
+def api_explain_batch_whatif():
+    """Perturb one feature across the whole loaded dataset and summarise the effect."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        feature = data.get("feature")
+        if not feature:
+            return _error("feature is required.")
+        result = agent.batch_what_if(feature, data.get("value"))
+        return _success(batch_whatif=result)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/repredict", methods=["POST"])
+def api_repredict():
+    """Re-score a (changed) table with the trained model, flagging drift + anomalies."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        table = data.get("table")
+        if not table:
+            return _error("table is required.")
+        res = agent.repredict_table(
+            table,
+            limit=data.get("limit"),
+            contamination=float(data.get("contamination", 0.05)),
+        )
+        return _success(
+            predictions=_jsonable(res["predictions"]),
+            columns=list(res["predictions"].columns),
+            rows=res["rows"],
+            drift=_jsonable(res["drift"]) if res["drift"] else None,
+            anomaly=res["anomaly"],
+            source=res["source"],
+        )
     except Exception as e:
         return _error(str(e))
 
@@ -1161,6 +1537,21 @@ def api_experiments_compare():
         if not a or not b:
             return _error("Both 'a' and 'b' experiment ids are required.")
         return _success(diff=_jsonable(agent.experiments.compare(a, b)))
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/experiments/propose", methods=["POST"])
+def api_experiments_propose():
+    """Find the best previous completed experiment matching the given data
+    source and/or target, so the user can reuse it instead of retraining."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        data_source = data.get("data_source") or data.get("table")
+        target = data.get("target_column")
+        found = agent.find_experiment(data_source=data_source, target_column=target)
+        return _success(found=found is not None, experiment=_jsonable(found) if found else None)
     except Exception as e:
         return _error(str(e))
 

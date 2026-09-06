@@ -95,6 +95,7 @@ class ModelSelector:
         test_size: float = 0.2,
         cv_folds: int = 5,
         random_state: int = 42,
+        n_jobs: int = 1,
     ):
         """
         Args:
@@ -103,13 +104,15 @@ class ModelSelector:
             test_size: Fraction of data for test set.
             cv_folds: Number of cross-validation folds.
             random_state: Random seed for reproducibility.
+            n_jobs: Parallel workers for cross-validation / tuning.
+                Defaults to 1 (safest inside the async worker thread).
         """
         self.target_column = target_column
         self.task_type = task_type
         self.test_size = test_size
         self.cv_folds = cv_folds
         self.random_state = random_state
-        self.n_jobs: int = 1
+        self.n_jobs: int = int(n_jobs) if n_jobs else 1
 
         self.feature_columns: List[str] = []
         self.categorical_columns: List[str] = []
@@ -238,8 +241,14 @@ class ModelSelector:
         y: pd.Series,
         progress_callback: Optional[Any] = None,
         should_stop: Optional[Any] = None,
+        early_stop: Optional[int] = None,
     ) -> Dict[str, float]:
         """Evaluate all candidate models with cross-validation.
+
+        The CV fold splits are computed once and reused across every model, so
+        all models see identical folds (result reuse). If ``early_stop`` is set
+        to an integer N, evaluation stops once the best score hasn't improved
+        for N consecutive models (after at least 3 have been tried).
 
         Args:
             X: Feature DataFrame.
@@ -247,16 +256,28 @@ class ModelSelector:
             progress_callback: Optional callback invoked after each model is
                 evaluated, receiving a dict with progress info.
             should_stop: Optional callable returning True to cancel training.
+            early_stop: Optional consecutive no-improvement threshold.
         """
         scores = {}
         models = self._get_models()
         names = list(models.keys())
         total = len(names)
-        cv = (
-            StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
-            if self.task_type == "classification"
-            else KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
-        )
+
+        # Compute the CV splits once and reuse for every model.
+        if self.task_type == "classification":
+            cv = StratifiedKFold(
+                n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
+            )
+        else:
+            cv = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
+        splits = list(cv.split(X, y))
+        if len(splits) < self.cv_folds:
+            # Not enough samples for the requested folds — fall back to defaults.
+            splits = None
+
+        best = -float("inf")
+        no_improve = 0
+        stopped_early = False
 
         for i, name in enumerate(names, 1):
             if should_stop and should_stop():
@@ -268,7 +289,7 @@ class ModelSelector:
                     ("model", model),
                 ])
                 score = cross_val_score(
-                    pipeline, X, y, cv=cv,
+                    pipeline, X, y, cv=splits,
                     scoring=self._get_metric(), n_jobs=self.n_jobs,
                 ).mean()
                 scores[name] = score
@@ -276,6 +297,23 @@ class ModelSelector:
                 if should_stop and should_stop():
                     raise InterruptedError("Training cancelled by user.")
                 continue
+
+            improved = score > best + 1e-9
+            if improved:
+                best = score
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (
+                early_stop
+                and i >= 3
+                and no_improve >= early_stop
+                and i < total
+            ):
+                stopped_early = True
+                break
+
             if progress_callback:
                 progress_callback({
                     "current": i,
@@ -284,6 +322,7 @@ class ModelSelector:
                     "scores": dict(scores),
                 })
 
+        self.early_stopped = stopped_early
         return scores
 
     def _get_feature_importance(self, model: BaseEstimator, X: pd.DataFrame) -> Optional[pd.DataFrame]:
@@ -320,6 +359,7 @@ class ModelSelector:
         progress_callback: Optional[Any] = None,
         should_stop: Optional[Any] = None,
         tuning: Optional[str] = None,
+        early_stop: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Automatically select the best model for the given data.
@@ -347,7 +387,9 @@ class ModelSelector:
         self.preprocessor = self._build_preprocessor()
 
         # Evaluate models
-        self.model_scores = self._evaluate_models(X, y, progress_callback, should_stop)
+        self.model_scores = self._evaluate_models(
+            X, y, progress_callback, should_stop, early_stop=early_stop
+        )
 
         if not self.model_scores:
             raise ValueError("No models could be evaluated successfully.")
@@ -549,6 +591,7 @@ class ModelSelector:
             "classification_report": self.classification_report,
             "best_params": self.best_params,
             "tuning": self.tuning,
+            "early_stopped": getattr(self, "early_stopped", False),
         }
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
