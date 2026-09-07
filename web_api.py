@@ -74,6 +74,7 @@ def _init_agent_stores(agent: MLAgent) -> None:
         agent.db.set_profile_store(os.path.join(store_dir, f"{slug}_profiles.json"))
         agent.experiments.set_store(os.path.join(store_dir, f"{slug}_experiments.json"))
         agent.recipes.set_store(os.path.join(store_dir, f"{slug}_recipes.json"))
+        agent.snapshots.set_store(os.path.join(store_dir, f"{slug}_snapshots.json"))
         agent.models_dir = os.path.join(store_dir, "models")
     except Exception:
         pass
@@ -776,6 +777,76 @@ def api_recipe_apply():
         return _error(str(e))
 
 
+# ============ Result snapshots & diff (Feature: snapshot) ============
+
+
+@app.route("/api/snapshots", methods=["GET"])
+def api_snapshots_list():
+    """List saved result snapshots."""
+    try:
+        agent = _get_agent()
+        snaps = agent.list_snapshots()
+        return _success(snapshots=snaps)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/snapshots", methods=["POST"])
+def api_snapshots_save():
+    """Save a JSON-serializable result snapshot under a name."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        name = agent.save_snapshot(
+            data.get("name") or "",
+            data.get("kind") or "manual",
+            data.get("payload") or {},
+            meta=data.get("meta") or {},
+        )
+        return _success(name=name)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/snapshots/<name>", methods=["GET"])
+def api_snapshots_get(name: str):
+    try:
+        agent = _get_agent()
+        snap = agent.get_snapshot(name)
+        if snap is None:
+            return _error("Snapshot not found.", status=404)
+        return _success(snapshot=snap)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/snapshots/<name>", methods=["DELETE"])
+def api_snapshots_delete(name: str):
+    try:
+        agent = _get_agent()
+        deleted = agent.delete_snapshot(name)
+        if not deleted:
+            return _error("Snapshot not found.", status=404)
+        return _success(deleted=True, name=name)
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/snapshots/diff", methods=["POST"])
+def api_snapshots_diff():
+    """Field-level comparison of two named snapshots."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        a, b = data.get("a"), data.get("b")
+        if not a or not b:
+            return _error("Both snapshot names (a and b) are required.")
+        diff = agent.diff_snapshots(a, b)
+        return _success(diff=diff)
+    except Exception as e:
+        return _error(str(e))
+
+
 @app.route("/api/settings", methods=["POST"])
 def api_settings():
     """Update DB query safety settings (read-only mode / timeout)."""
@@ -901,6 +972,21 @@ def api_auto_prepare():
             columns=list(agent.current_df.columns),
             data=_jsonable(agent.current_df.head(100)),
         )
+    except Exception as e:
+        return _error(str(e))
+
+
+@app.route("/api/feature-health", methods=["POST"])
+def api_feature_health():
+    """Report near-constant / high-cardinality / collinear features (filtering hints)."""
+    try:
+        agent = _get_agent()
+        data = request.get_json(silent=True) or {}
+        result = agent.check_feature_health(
+            target_column=data.get("target_column"),
+            corr_threshold=float(data.get("corr_threshold", 0.95)),
+        )
+        return _success(health=result)
     except Exception as e:
         return _error(str(e))
 

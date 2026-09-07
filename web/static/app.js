@@ -5,6 +5,9 @@ let currentTab = 'data';
 let preprocessQueue = [];
 let connectedTables = [];
 let currentDataSource = null;
+let lastAnalyzeResult = null;
+let lastPredictions = null;
+let lastPredictColumns = null;
 
 // ============ Helpers ============
 
@@ -893,6 +896,7 @@ document.getElementById('btn-analyze').addEventListener('click', async (e) => {
     const _btn = e.currentTarget; setLoading(_btn, true);
     try {
         const res = await api('/api/analyze', 'POST', { type, target_column: target });
+        lastAnalyzeResult = res.analysis;
         const out = document.getElementById('analyze-result');
         if (type === 'health') {
             out.innerHTML = renderHealthReport(res.analysis);
@@ -1039,9 +1043,6 @@ document.getElementById('btn-train').addEventListener('click', () => {
 document.getElementById('btn-auto-train').addEventListener('click', () => runAutoTrain());
 
 // ============ Prediction ============
-
-let lastPredictions = null;
-let lastPredictColumns = null;
 
 function renderPredictions(res, containerId, filenameBase) {
     lastPredictions = res.predictions;
@@ -1674,6 +1675,283 @@ document.getElementById('btn-recipe-save').addEventListener('click', async (e) =
 });
 document.getElementById('btn-recipe-refresh').addEventListener('click', () => refreshRecipes());
 
+// ============ Feature health (Tier 3 #11) ============
+
+function renderFeatureHealth(h) {
+    if (!h) return '';
+    let html = '<p><strong>' + escapeHtml(h.warnings.join(' · ')) + '</strong></p>';
+
+    if (h.near_constant && h.near_constant.length) {
+        html += '<h4>Near-constant columns</h4><ul>';
+        for (const c of h.near_constant) {
+            html += '<li>' + escapeHtml(c.column) + ' (' + escapeHtml(c.reason) +
+                (c.dominance != null ? ', ' + (c.dominance * 100).toFixed(1) + '% one value' : '') + ')</li>';
+        }
+        html += '</ul>';
+    }
+    if (h.high_cardinality && h.high_cardinality.length) {
+        html += '<h4>High-cardinality / ID-like columns</h4><ul>';
+        for (const c of h.high_cardinality) {
+            html += '<li>' + escapeHtml(c.column) + ' (' + c.unique_values + ' unique)</li>';
+        }
+        html += '</ul>';
+    }
+    if (h.multicollinearity && h.multicollinearity.length) {
+        html += '<h4>Highly-correlated pairs (multicollinearity)</h4>' +
+            '<table class="dataframe"><thead><tr><th>Feature A</th><th>Feature B</th><th>Correlation</th><th>Suggested drop</th></tr></thead><tbody>';
+        for (const m of h.multicollinearity) {
+            html += '<tr><td>' + escapeHtml(m.feature_a) + '</td><td>' + escapeHtml(m.feature_b) + '</td>' +
+                '<td>' + m.correlation.toFixed(3) + '</td><td>' + escapeHtml(m.suggested_drop) + '</td></tr>';
+        }
+        html += '</tbody></table>';
+    }
+    if (!h.near_constant.length && !h.high_cardinality.length && !h.multicollinearity.length) {
+        html += '<p class="hint">No obvious filtering problems found — features look healthy.</p>';
+    }
+    return html;
+}
+
+document.getElementById('btn-feature-health').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
+    const target = document.getElementById('train-target').value.trim() || null;
+    const thr = parseFloat(document.getElementById('feature-corr-threshold').value);
+    try {
+        const res = await api('/api/feature-health', 'POST', {
+            target_column: target,
+            corr_threshold: isNaN(thr) ? 0.95 : thr,
+        });
+        document.getElementById('feature-health-result').innerHTML = renderFeatureHealth(res.health);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_btn, false); }
+});
+
+// ============ Result snapshots & diff (Tier 3 #10) ============
+
+async function buildSnapshotPayload(kind) {
+    if (kind === 'training') {
+        try { return (await api('/api/model-info')).model || {}; }
+        catch (e) { return {}; }
+    }
+    if (kind === 'analysis') return lastAnalyzeResult || {};
+    if (kind === 'prediction') {
+        return lastPredictions && lastPredictions.length
+            ? { predictions: lastPredictions.slice(0, 100), count: lastPredictions.length }
+            : {};
+    }
+    // manual: merge whatever is available
+    const m = {};
+    if (lastAnalyzeResult) m.analysis = lastAnalyzeResult;
+    if (lastPredictions) m.prediction_count = lastPredictions.length;
+    return m;
+}
+
+function renderSnapshotDiff(d) {
+    if (!d) return '';
+    let html = '<p><strong>Diff:</strong> ' + escapeHtml(d.a) + ' (' + escapeHtml(d.kind_a || '?') + ') vs ' +
+        escapeHtml(d.b) + ' (' + escapeHtml(d.kind_b || '?') + ') — ' + d.change_count + ' change(s)</p>';
+    if (!d.changes || !d.changes.length) {
+        html += '<p class="hint">No differences in the compared fields.</p>';
+        return html;
+    }
+    html += '<table class="dataframe"><thead><tr><th>Field</th><th>("' + escapeHtml(d.a) + '" → "' + escapeHtml(d.b) + '")</th></tr></thead><tbody>';
+    for (const c of d.changes) {
+        const field = escapeHtml(c.field);
+        let val;
+        if (c.kind === 'numeric') {
+            val = '<span>' + formatJson(c.old) + ' → <strong>' + formatJson(c.new) + '</strong> (Δ ' + formatJson(c.delta) + ')</span>';
+        } else {
+            val = '<span>' + escapeHtml(String(c.old)) + ' → <strong>' + escapeHtml(String(c.new)) + '</strong></span>';
+        }
+        html += '<tr><td>' + field + '</td><td>' + val + '</td></tr>';
+    }
+    html += '</tbody></table>';
+    return html;
+}
+
+async function refreshSnapshots() {
+    let snaps = [];
+    try { snaps = (await api('/api/snapshots')).snapshots || []; }
+    catch (e) { snaps = []; }
+    const listBox = document.getElementById('snapshot-list');
+    if (!listBox) return;
+    if (!snaps.length) {
+        listBox.innerHTML = '<p class="hint">No snapshots yet. Run an analysis / training / prediction, then Save Current Result to compare before vs after (or two models).</p>';
+    } else {
+        listBox.innerHTML = '<table class="dataframe"><thead><tr><th>Name</th><th>Kind</th><th>Created</th><th></th></tr></thead><tbody>' +
+            snaps.map(s => '<tr><td>' + escapeHtml(s.name) + '</td><td>' + escapeHtml(s.kind) + '</td><td>' + escapeHtml(s.created_iso || '') +
+                '</td><td><button class="btn btn-outline btn-sm js-snap-del" data-n="' + escapeHtml(s.name) + '">Delete</button></td></tr>').join('') +
+            '</tbody></table>';
+        listBox.querySelectorAll('.js-snap-del').forEach(b => b.addEventListener('click', async () => {
+            try {
+                await api('/api/snapshots/' + encodeURIComponent(b.dataset.n), 'DELETE');
+                showToast('Snapshot deleted.', 'success');
+                await refreshSnapshots();
+            } catch (err) { showToast(err.message, 'error'); }
+        }));
+    }
+    const aSel = document.getElementById('snap-diff-a');
+    const bSel = document.getElementById('snap-diff-b');
+    if (aSel && bSel) {
+        const opts = snaps.map(s => '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</option>').join('');
+        aSel.innerHTML = opts;
+        bSel.innerHTML = opts;
+    }
+}
+
+document.getElementById('btn-snap-save').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
+    const kind = document.getElementById('snap-kind').value;
+    const payload = await buildSnapshotPayload(kind);
+    if (Object.keys(payload).length === 0 && kind !== 'manual') {
+        setLoading(_btn, false);
+        showToast('Nothing to snapshot yet — run an analysis, training, or prediction first.', 'warning');
+        return;
+    }
+    try {
+        await api('/api/snapshots', 'POST', {
+            name: document.getElementById('snap-name').value.trim(),
+            kind,
+            payload,
+        });
+        showToast('Snapshot saved.', 'success');
+        document.getElementById('snap-name').value = '';
+        await refreshSnapshots();
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_btn, false); }
+});
+
+document.getElementById('btn-snap-refresh').addEventListener('click', () => refreshSnapshots());
+
+document.getElementById('btn-snap-diff').addEventListener('click', async (e) => {
+    const _btn = e.currentTarget; setLoading(_btn, true);
+    const a = document.getElementById('snap-diff-a').value;
+    const b = document.getElementById('snap-diff-b').value;
+    if (!a || !b || a === b) { setLoading(_btn, false); showToast('Select two different snapshots.', 'warning'); return; }
+    try {
+        const res = await api('/api/snapshots/diff', 'POST', { a, b });
+        document.getElementById('snapshot-diff-result').innerHTML = renderSnapshotDiff(res.diff);
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { setLoading(_btn, false); }
+});
+
+// ============ Command palette (Tier 3 #12) ============
+
+const COMMANDS = [
+    { label: 'Switch to Data tab', tab: 'data' },
+    { label: 'Switch to Preprocess tab', tab: 'preprocess' },
+    { label: 'Switch to Analyze tab', tab: 'analyze' },
+    { label: 'Switch to Train tab', tab: 'train' },
+    { label: 'Switch to Predict tab', tab: 'predict' },
+    { label: 'Switch to Schema tab', tab: 'schema' },
+    { label: 'Switch to LLM Advisor tab', tab: 'llm' },
+    { label: 'Load selected table', run: () => { switchTab('data'); clickIt('btn-load-table'); } },
+    { label: 'Run custom SQL query', run: () => { switchTab('data'); return clickIt('btn-run-query'); } },
+    { label: 'Database overview', run: () => { switchTab('data'); clickIt('btn-overview'); } },
+    { label: 'Check LLM connection', run: () => { switchTab('data'); clickIt('btn-llm-check'); } },
+    { label: 'Auto-train (suggest target → prepare → train)', run: () => { switchTab('train'); return clickIt('btn-auto-train'); } },
+    { label: 'Train model', run: () => { switchTab('train'); return clickIt('btn-train'); } },
+    { label: 'Check feature health', run: () => { switchTab('train'); clickIt('btn-feature-health'); } },
+    { label: 'Save model', run: () => { switchTab('train'); return clickIt('btn-save-model'); } },
+    { label: 'Export loaded data (CSV)', run: () => { switchTab('data'); clickIt('btn-export-data'); } },
+    { label: 'Export preprocessed data (CSV)', run: () => { switchTab('preprocess'); clickIt('btn-export-preprocessed'); } },
+    { label: 'Detect anomalies', run: () => { switchTab('schema'); clickIt('btn-anomaly-detect'); } },
+];
+
+function clickIt(id) {
+    const el = document.getElementById(id);
+    if (el) { el.click(); return true; }
+    return false;
+}
+
+let paletteActive = 0;
+let paletteItems = [];
+
+function renderPalette(filter) {
+    const q = (filter || '').toLowerCase().trim();
+    paletteItems = COMMANDS.filter(c =>
+        !q || c.label.toLowerCase().includes(q) ||
+        ((c.tab || '').toLowerCase().includes(q))
+    );
+    const list = document.getElementById('command-palette-list');
+    if (!paletteItems.length) {
+        list.innerHTML = '<div class="command-palette-empty">No matches.</div>';
+        return;
+    }
+    if (paletteActive > paletteItems.length - 1) paletteActive = paletteItems.length - 1;
+    list.innerHTML = paletteItems.map((c, i) =>
+        `<div class="command-item ${i === paletteActive ? 'active' : ''}" data-idx="${i}">` +
+        `<span class="command-label">${escapeHtml(c.label)}</span>` +
+        (c.tab ? `<span class="command-tab">${escapeHtml(c.tab)}</span>` : '') +
+        `</div>`).join('');
+
+    list.querySelectorAll('.command-item').forEach(el => {
+        el.addEventListener('click', () => runPaletteCommand(parseInt(el.dataset.idx, 10)));
+    });
+}
+
+async function runPaletteCommand(idx) {
+    const c = paletteItems[idx];
+    if (!c) return;
+    closePalette();
+    if (c.tab) switchTab(c.tab);
+    if (c.run) {
+        try { await c.run(); }
+        catch (e) { showToast(e.message || 'Command failed.', 'error'); }
+    }
+}
+
+function openPalette() {
+    const pal = document.getElementById('command-palette');
+    pal.classList.remove('hidden');
+    const input = document.getElementById('command-palette-input');
+    paletteActive = 0;
+    input.value = '';
+    renderPalette('');
+    input.focus();
+}
+
+function closePalette() {
+    document.getElementById('command-palette').classList.add('hidden');
+}
+
+document.getElementById('command-palette-input').addEventListener('input', (e) => {
+    paletteActive = 0;
+    renderPalette(e.target.value);
+});
+
+document.getElementById('command-palette-input').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        paletteActive = Math.min(paletteActive + 1, paletteItems.length - 1);
+        renderPalette(document.getElementById('command-palette-input').value);
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        paletteActive = Math.max(paletteActive - 1, 0);
+        renderPalette(document.getElementById('command-palette-input').value);
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        runPaletteCommand(paletteActive);
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closePalette();
+    }
+});
+
+document.getElementById('command-palette').addEventListener('click', (e) => {
+    if (e.target.id === 'command-palette') closePalette();
+});
+
+document.getElementById('btn-open-palette').addEventListener('click', () => openPalette());
+
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        const pal = document.getElementById('command-palette');
+        if (pal.classList.contains('hidden')) openPalette();
+        else closePalette();
+    }
+});
+
 // ============ Tab switching ============
 
 document.querySelectorAll('.tab').forEach(tab => {
@@ -1684,4 +1962,5 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 refreshState();
 refreshRecipes();
+refreshSnapshots();
 setInterval(pollNotifications, 4000);

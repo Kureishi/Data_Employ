@@ -28,6 +28,9 @@ An intelligent agent that processes SQL databases, automatically determines the 
 - **Early-Stop Model Search**: Stop evaluating candidate models once the best score stops improving after N consecutive models (avoids wasted training time)
 - **Batch What-If**: Perturb one feature across all loaded rows and summarize the effect on predictions (mean delta for regression, % class-change for classification)
 - **Async Everything + Notifications**: Long-running ops (analyze, synthesize, monitor, anomaly, re-predict, recipe-apply) run as background jobs with completion toasts
+- **Feature Health / Smarter Filtering**: Detect near-constant and high-cardinality ID/free-text columns and highly-correlated feature pairs (multicollinearity) with suggested drops before training
+- **Result Snapshots & Diff**: Save analysis / training / prediction results as named snapshots and compare two of them field-by-field (numeric deltas, changed flags) to see before-vs-after or model-vs-model
+- **Command Palette**: Press **Ctrl/Cmd+K** (or the sidebar button) for a keyboard-driven palette that switches tabs and runs common actions instantly
 - **Automatic Model Selection**: Evaluates 9 regression models and 7 classification models using cross-validation to find the best performer
 - **Hyperparameter Tuning**: Optionally tune the best-selected model with `GridSearchCV` (Full) or `RandomizedSearchCV` (Quick) — Off / Quick / Full
 - **Task Type Auto-Detection**: Automatically determines if the task is regression or classification based on data characteristics
@@ -481,8 +484,8 @@ Then open **http://localhost:5000** in your browser.
 |-----|-------------|
 | **Data** | Connect to a database, browse tables, run SQL queries, preview/export data |
 | **Preprocess** | Queue and apply preprocessing operations, or let the LLM suggest them; export the result |
-| **Analyze** | Run summary, correlations, insights, target, and data-health analysis (with inline charts) |
-| **Train** | Train the best model with **Off / Quick / Full hyperparameter tuning**, live progress + cancel, model-score and feature-importance charts, and a confusion matrix / classification report for classification tasks |
+| **Analyze** | Run summary, correlations, insights, target, and data-health analysis (with inline charts); save any result as a named **snapshot** and **diff** two snapshots side-by-side |
+| **Train** | Train the best model with **Off / Quick / Full hyperparameter tuning**, live progress + cancel, model-score and feature-importance charts, and a confusion matrix / classification report for classification tasks. Includes a **Feature Health** check (near-constant / high-cardinality / multicollinearity warnings) |
 | **Predict** | Predict single JSON records, batch-predict a DB table / loaded data / uploaded CSV, export predictions to CSV, explain a prediction by feature contributions, and run single-feature what-if analysis |
 | **Model Persistence** | Save, download, load, or upload&load portable `.joblib` models |
 | **Schema** | ER diagram, semantic column types, auto-join builder, saved queries, sample loading, drift profiling, anomaly detection, model-drift monitoring, and read-only/query-safety settings |
@@ -533,6 +536,7 @@ Then open **http://localhost:5000** in your browser.
 | `POST` | `/api/monitor/check` | Compare a live table against the reference `{"table": "sales"}` (PSI drift) |
 | `GET` | `/api/suggest-targets` | Ranked heuristic target-column suggestions for the current data (offline, instant) |
 | `POST` | `/api/auto-prepare` | Auto-prepare data `{"target_column": "salary"}` — drops constant / high-cardinality ID columns |
+| `POST` | `/api/feature-health` | Feature-filtering health report `{"target_column": "salary", "corr_threshold": 0.95}` — near-constant / high-cardinality / multicollinearity |
 | `POST` | `/api/experiments/propose` | Find the best cached experiment matching `{"data_source": ..., "target_column": ...}` to reuse instead of retraining |
 | `POST` | `/api/train` | Start async training job `{"target_column": "salary", "task_type": null, "tuning": "quick", "n_jobs": 4, "early_stop": 3}` → returns `job_id` |
 | `GET` | `/api/train/status/<job_id>` | Poll training job status, progress, and results |
@@ -550,6 +554,11 @@ Then open **http://localhost:5000** in your browser.
 | `GET` | `/api/recipe/list` | List saved recipes |
 | `POST` | `/api/recipe/apply` | Reproduce a recipe synchronously `{"name": "sales_forecast"}` |
 | `POST` | `/api/recipe/delete/<name>` | Delete a saved recipe |
+| `GET` | `/api/snapshots` | List saved result snapshots |
+| `POST` | `/api/snapshots` | Save a result snapshot `{"name": ..., "kind": "analysis", "payload": {...}}` |
+| `GET` | `/api/snapshots/<name>` | Get a saved snapshot |
+| `DELETE` | `/api/snapshots/<name>` | Delete a saved snapshot |
+| `POST` | `/api/snapshots/diff` | Field-by-field diff of two snapshots `{"a": ..., "b": ...}` |
 | `POST` | `/api/predict/table` | Batch-predict every row of a table `{"table": "employees"}` |
 | `POST` | `/api/predict/current` | Batch-predict the currently loaded dataset |
 | `POST` | `/api/predict/upload` | Upload a CSV of features and batch-predict them |

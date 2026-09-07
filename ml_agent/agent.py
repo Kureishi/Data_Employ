@@ -16,6 +16,7 @@ from .sql_validation import SQLValidator
 from .anomaly import AnomalyDetector
 from .model_monitor import ModelMonitor
 from .recipes import RecipeStore
+from .snapshots import SnapshotStore
 
 
 class MLAgent:
@@ -72,6 +73,7 @@ class MLAgent:
 
         # Recipe / reproducibility state
         self.recipes = RecipeStore()
+        self.snapshots = SnapshotStore()
         self._last_operations: List[Dict[str, Any]] = []
         self._last_synth_base: Optional[str] = None
         self._last_synth_counts: bool = True
@@ -317,6 +319,107 @@ class MLAgent:
         results["recipe"] = name
         return results
 
+    # ========== Named result snapshots & diff (Feature: snapshot) ==========
+
+    def set_snapshot_store(self, path: str) -> None:
+        self.snapshots.set_store(path)
+
+    def save_snapshot(
+        self, name: str, kind: str, payload: Dict[str, Any],
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Save a JSON-serializable result snapshot under a name."""
+        return self.snapshots.save(name, kind, payload, meta=meta)
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        return self.snapshots.list()
+
+    def get_snapshot(self, name: str) -> Optional[Dict[str, Any]]:
+        return self.snapshots.get(name)
+
+    def delete_snapshot(self, name: str) -> bool:
+        return self.snapshots.delete(name)
+
+    def diff_snapshots(self, a: str, b: str) -> Dict[str, Any]:
+        return self.snapshots.diff(a, b)
+
+    # ========== Feature health / smarter filtering (Feature: feature-health) ==========
+
+    def check_feature_health(
+        self,
+        target_column: Optional[str] = None,
+        corr_threshold: float = 0.95,
+    ) -> Dict[str, Any]:
+        """Report feature-filtering health for the loaded dataset.
+
+        Detects near-constant columns, high-cardinality ID/free-text columns,
+        and highly-collinear numeric feature pairs (multicollinearity) so the
+        user can drop uninformative / redundant features before training.
+        """
+        if self.current_df is None:
+            raise RuntimeError("No data loaded. Call load_table() first.")
+        df = self.current_df
+        target = target_column or self.target_column
+        rows = int(len(df))
+        if rows == 0:
+            return {"rows": 0, "near_constant": [], "high_cardinality": [],
+                    "multicollinearity": [], "warnings": []}
+
+        near_constant = []
+        high_cardinality = []
+        for col in df.columns:
+            if col == target:
+                continue
+            s = df[col]
+            nunique = int(s.nunique(dropna=False))
+            if nunique <= 1:
+                near_constant.append({"column": col, "unique_values": nunique,
+                                      "reason": "constant"})
+            elif 2 <= nunique <= 5 and rows >= 50:
+                top = float(s.value_counts(normalize=True, dropna=False).iloc[0])
+                if top >= 0.99:
+                    near_constant.append({"column": col, "unique_values": nunique,
+                                          "reason": "near-constant", "dominance": round(top, 3)})
+            if (not pd.api.types.is_numeric_dtype(s.dtype)) and nunique > max(100, int(rows * 0.95)):
+                high_cardinality.append({"column": col, "unique_values": nunique})
+
+        # Multicollinearity among candidate numeric features.
+        num_cols = [c for c in df.columns if c != target
+                    and pd.api.types.is_numeric_dtype(df[c].dtype)]
+        conflicts = []
+        if len(num_cols) >= 2:
+            corr = df[num_cols].corr()
+            for i in range(len(num_cols)):
+                for j in range(i + 1, len(num_cols)):
+                    aa, bb = num_cols[i], num_cols[j]
+                    c = corr.loc[aa, bb]
+                    if c is None or (isinstance(c, float) and c != c):  # NaN
+                        continue
+                    if abs(float(c)) >= corr_threshold:
+                        std_a = float(df[aa].std()) or 0.0
+                        std_b = float(df[bb].std()) or 0.0
+                        # Suggest dropping the lower-variance one.
+                        suggested = aa if std_a <= std_b else bb
+                        conflicts.append({
+                            "feature_a": aa, "feature_b": bb,
+                            "correlation": round(float(c), 4),
+                            "suggested_drop": suggested,
+                        })
+
+        warnings = [
+            f"{len(near_constant)} near-constant column(s)",
+            f"{len(high_cardinality)} high-cardinality column(s)",
+            f"{len(conflicts)} highly-correlated pair(s)",
+        ]
+        return {
+            "rows": rows,
+            "target_column": target,
+            "near_constant": near_constant,
+            "high_cardinality": high_cardinality,
+            "multicollinearity": conflicts,
+            "warnings": warnings,
+        }
+
     # ========== Preprocessing Operations ==========
 
     def preprocess(self, df: Optional[pd.DataFrame] = None) -> DataPreprocessor:
@@ -394,6 +497,12 @@ class MLAgent:
             if nunique <= 1:
                 if col != target:
                     dropped.append({"column": col, "reason": "constant"})
+                    continue
+            # Near-constant (one value dominates 99%+) — drop unless target
+            elif 2 <= nunique <= 5 and len(df) >= 50:
+                top = s.value_counts(normalize=True, dropna=False).iloc[0]
+                if top >= 0.99 and col != target:
+                    dropped.append({"column": col, "reason": "near-constant"})
                     continue
             # High-cardinality object column (~ID / free text) — drop unless target
             elif (not pd.api.types.is_numeric_dtype(s.dtype)) and nunique > max(100, int(len(s) * 0.95)):

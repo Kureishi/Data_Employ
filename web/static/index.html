@@ -46,6 +46,7 @@
                 <h3>Quick Actions</h3>
                 <button id="btn-overview" class="btn btn-outline btn-sm">Database Overview</button>
                 <button id="btn-llm-check" class="btn btn-outline btn-sm">Check LLM</button>
+                <button id="btn-open-palette" class="btn btn-outline btn-sm">⌘K Command Palette</button>
             </div>
         </aside>
 
@@ -133,6 +134,28 @@
                     </div>
                     <div id="analyze-result" class="data-box"></div>
                 </div>
+                <div class="card">
+                    <h2>Result Snapshots &amp; Diff</h2>
+                    <div class="form-row">
+                        <input type="text" id="snap-name" placeholder="Snapshot name (e.g., before_or_salary_model)" />
+                        <select id="snap-kind">
+                            <option value="analysis">Analysis</option>
+                            <option value="training">Training</option>
+                            <option value="prediction">Prediction</option>
+                            <option value="manual">Manual</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm" id="btn-snap-save">Save Current Result</button>
+                        <button class="btn btn-outline btn-sm" id="btn-snap-refresh">Refresh</button>
+                    </div>
+                    <div class="form-row">
+                        <select id="snap-diff-a"></select>
+                        <span>vs</span>
+                        <select id="snap-diff-b"></select>
+                        <button class="btn btn-primary btn-sm" id="btn-snap-diff">Diff</button>
+                    </div>
+                    <div id="snapshot-list" class="data-box"></div>
+                    <div id="snapshot-diff-result" class="data-box"></div>
+                </div>
             </div>
 
             <!-- Train Tab -->
@@ -162,6 +185,15 @@
                     </div>
                     <div id="train-progress" class="train-progress"></div>
                     <div id="train-result" class="data-box"></div>
+                </div>
+                <div class="card">
+                    <h2>Feature Health (Smarter Filtering)</h2>
+                    <div class="form-row">
+                        <button class="btn btn-outline btn-sm" id="btn-feature-health">Check Features</button>
+                        <label>corr ≤ <input type="number" id="feature-corr-threshold" value="0.95" min="0" max="1" step="0.01" style="width:70px" /></label>
+                    </div>
+                    <div id="feature-health-result" class="data-box"></div>
+                    <p class="hint">Detects near-constant columns, high-cardinality ID/free-text columns, and highly correlated feature pairs (multicollinearity) so you can drop uninformative / redundant inputs before training.</p>
                 </div>
                 <div class="card">
                     <h2>Save / Load Model</h2>
@@ -401,6 +433,15 @@
             </div>
         </section>
     </main>
+
+    <!-- Command palette (Ctrl+K) -->
+    <div id="command-palette" class="command-palette hidden">
+        <div class="command-palette-box">
+            <input type="text" id="command-palette-input" placeholder="Type a command…  (e.g. 'train', 'export', 'suggest target')" autocomplete="off" />
+            <div id="command-palette-list" class="command-palette-list"></div>
+            <div class="command-palette-hint">↑↓ navigate · Enter run · Esc close</div>
+        </div>
+    </div>
 
     <div id="toast-container"></div>
 
