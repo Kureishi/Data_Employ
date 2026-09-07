@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Trained models / fingerprints generated at runtime
+ml_agent_models/
+*.joblib
+!**/*.joblib.example
+
+# Runtime data
+.mlagent/
+
+# Uploads / stores (do not commit uploaded DBs or per-db state)
+uploads/
+
+# Logs & scratch
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

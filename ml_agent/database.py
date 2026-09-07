@@ -32,11 +32,46 @@ class DatabaseProcessor:
         return cs
 
     def _connect(self) -> None:
+        from . import config as cfg  # local import: avoid import cost at module load
+
         try:
-            self.engine = create_engine(self.connection_string)
+            url = self.connection_string
+            backend = (url.split("://", 1)[0] or "sqlite").lower()
+            kwargs: Dict[str, Any] = {}
+
+            if backend == "sqlite":
+                # SQLite needs a connect_args timeout so concurrent writers/readers
+                # wait on the in-process busy lock instead of failing immediately,
+                # and allow the pooled connection to be used across threads when
+                # the server runs threaded (waitress/gunicorn threads).
+                kwargs = {
+                    "connect_args": {
+                        "timeout": cfg.SQLITE_BUSY_TIMEOUT / 1000.0,
+                        "check_same_thread": cfg.SQLITE_CHECK_SAME_THREAD,
+                    }
+                }
+            else:
+                # Network databases: build a bounded pool and pre-ping idle
+                # connections so a dropped MySQL/Postgres connection is detected
+                # and replaced instead of raising mid-request.
+                kwargs = {
+                    "pool_size": cfg.DB_POOL_SIZE,
+                    "max_overflow": cfg.DB_MAX_OVERFLOW,
+                    "pool_recycle": cfg.DB_POOL_RECYCLE,
+                    "pool_timeout": cfg.DB_POOL_TIMEOUT,
+                    "pool_pre_ping": cfg.DB_POOL_PRE_PING,
+                }
+                if cfg.DB_CONNECT_TIMEOUT is not None:
+                    kwargs.setdefault(
+                        "connect_args",
+                        {"connect_timeout": cfg.DB_CONNECT_TIMEOUT},
+                    )
+
+            self.engine = create_engine(url, **kwargs)
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
         except Exception as e:
+            self.engine = None
             raise ConnectionError(f"Failed to connect to database: {e}")
 
     def get_tables(self) -> List[str]:

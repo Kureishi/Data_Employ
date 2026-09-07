@@ -8,9 +8,8 @@ Run:
 Then open http://localhost:5000 in your browser.
 """
 import argparse
+import logging
 import os
-import sys
-import tempfile
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -20,6 +19,10 @@ from flask import Flask, jsonify, request, send_from_directory, send_file, Respo
 from werkzeug.utils import secure_filename
 
 from ml_agent import MLAgent
+from ml_agent import config as cfg
+from ml_agent.logging_utils import configure_logging
+
+log = logging.getLogger("ml_agent.web_api")
 
 # ============ App setup ============
 
@@ -29,8 +32,23 @@ app = Flask(
     template_folder="web/templates",
 )
 
-# Global agent state
+# Cap request body size so a single client can't exhaust memory (scalability + DoS).
+app.config["MAX_CONTENT_LENGTH"] = cfg.WEB_MAX_CONTENT_LENGTH
+
+# When behind a load balancer / reverse proxy, honor X-Forwarded-* headers so
+# request.client and url_for produce the correct external scheme/host.
+if cfg.WEB_TRUST_PROXY:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+# Global agent state. A single agent holds mutable state (current_df,
+# model_selector, ...). AGENT_LOCK serializes *state-mutating* operations that
+# are launched from background threads (connect/disconnect/train/op jobs) so
+# they cannot tear while another request is mid-operation. Pure reads stay
+# lock-free and therefore concurrent.
 AGENT: Optional[MLAgent] = None
+AGENT_LOCK = threading.RLock()
 
 # Async training-job registry (id -> job dict)
 TRAIN_JOBS: Dict[str, Dict[str, Any]] = {}
@@ -41,10 +59,10 @@ TRAIN_LOCK = threading.Lock()
 OP_JOBS: Dict[str, Dict[str, Any]] = {}
 OP_LOCK = threading.Lock()
 NOTIFICATIONS: List[Dict[str, Any]] = []
-MAX_NOTIFICATIONS = 10
+MAX_NOTIFICATIONS = cfg.WEB_MAX_NOTIFICATIONS
 
-# Upload directory for database files
-UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "ml_agent_uploads")
+# Upload directory for database / model files (configurable via env for prod).
+UPLOAD_DIR = cfg.get_upload_dir()
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_DB_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
@@ -152,7 +170,11 @@ def _start_op_job(op_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
     def worker() -> None:
         try:
-            result = handler(agent, params)
+            # Serialize agent state mutation against connect/disconnect/other
+            # background jobs so a swap of current_df / predictor can't happen
+            # while another request or job is reading it.
+            with AGENT_LOCK:
+                result = handler(agent, params)
             with OP_LOCK:
                 job["result"] = result
             job["status"] = "done"
@@ -1115,16 +1137,20 @@ def api_train():
 
         def worker() -> None:
             try:
-                results = agent.train(
-                    target_column=target,
-                    task_type=task_type,
-                    table_name=table,
-                    progress_callback=progress_cb,
-                    should_stop=should_stop,
-                    tuning=tuning,
-                    n_jobs=n_jobs,
-                    early_stop=early_stop,
-                )
+                # Hold the agent-state lock for the whole training run so the
+                # resulting predictor/model_selector/current_df swap is atomic
+                # w.r.t. connect/disconnect and other background jobs.
+                with AGENT_LOCK:
+                    results = agent.train(
+                        target_column=target,
+                        task_type=task_type,
+                        table_name=table,
+                        progress_callback=progress_cb,
+                        should_stop=should_stop,
+                        tuning=tuning,
+                        n_jobs=n_jobs,
+                        early_stop=early_stop,
+                    )
                 job["status"] = "done"
                 job["training"] = _serialize_training(results)
                 job["progress"] = {
@@ -1761,6 +1787,22 @@ def api_llm_explain_predictions():
         return _error(str(e))
 
 
+# ============ Request logging (structured, production-friendly) ============
+
+
+@app.before_request
+def _log_request_start() -> None:
+    request._start_time = time.monotonic()
+    log.info("-> %s %s", request.method, request.path)
+
+
+@app.after_request
+def _log_request_end(resp: Response) -> Response:
+    ms = (time.monotonic() - getattr(request, "_start_time", time.monotonic())) * 1000
+    log.info("<- %s %s %s (%.1f ms)", request.method, request.path, resp.status_code, ms)
+    return resp
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ML Agent Web API")
     parser.add_argument(
@@ -1768,29 +1810,57 @@ def main() -> None:
         help="SQL database connection string or SQLite file path (e.g., sample_company.db)",
     )
     parser.add_argument(
-        "--host", default="127.0.0.1",
-        help="Host to bind (default: 127.0.0.1)",
+        "--host", default=cfg.WEB_HOST,
+        help="Host to bind (default: %(default)s)",
     )
     parser.add_argument(
-        "--port", type=int, default=5000,
-        help="Port to bind (default: 5000)",
+        "--port", type=int, default=cfg.WEB_PORT,
+        help="Port to bind (default: %(default)s)",
     )
     parser.add_argument(
         "--debug", action="store_true",
-        help="Enable Flask debug mode",
+        help="Run the Flask development server instead of the production WSGI server",
     )
     args = parser.parse_args()
+
+    configure_logging()
 
     global AGENT
     if args.database:
         try:
             AGENT = MLAgent(args.database)
-            print(f"Connected to database: {args.database}", file=sys.stderr)
+            log.info("Connected to database: %s", args.database)
         except Exception as e:
-            print(f"Failed to connect to database: {e}", file=sys.stderr)
+            log.error("Failed to connect to database: %s", e)
 
-    print(f"ML Agent Web API running at http://{args.host}:{args.port}", file=sys.stderr)
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
+    # Production default: serve via waitress (cross-platform, thread pool) so
+    # the API can handle concurrent requests without the Flask dev server.
+    if not args.debug:
+        try:
+            from waitress import serve
+
+            log.info(
+                "ML Agent Web API (waitress) at http://%s:%s with %d threads",
+                args.host, args.port, cfg.WSGI_THREADS,
+            )
+            serve(
+                app,
+                host=args.host,
+                port=args.port,
+                threads=cfg.WSGI_THREADS,
+                channel_timeout=300,
+            )
+            return
+        except ImportError:
+            log.warning(
+                "waitress not installed; falling back to the Flask dev server. "
+                "Install it with: pip install waitress"
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            log.warning("waitress failed to start (%s); using Flask dev server", e)
+
+    log.info("ML Agent Web API (dev server) at http://%s:%s", args.host, args.port)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=cfg.WSGI_THREADS > 1)
 
 
 if __name__ == "__main__":

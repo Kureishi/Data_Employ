@@ -474,6 +474,10 @@ python web_api.py
 
 # Custom host/port
 python web_api.py --db sample_company.db --host 0.0.0.0 --port 8080
+
+# Production: run with --debug to force the Flask dev server; otherwise the
+# app automatically serves via the waitress production WSGI server (threads by
+# default). See "Production Deployment & Scalability" below.
 ```
 
 Then open **http://localhost:5000** in your browser.
@@ -600,13 +604,76 @@ curl -X POST http://localhost:5000/api/predict \
   -d '{"data": {"age": 30, "years_experience": 5, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75, "satisfaction_score": 70}}'
 ```
 
+## Production Deployment & Scalability
+
+The codebase ships production-ready server defaults so the same repo runs in
+dev and in production, tuned purely through environment variables (no code
+changes).
+
+### Production WSGI server
+
+`python web_api.py` automatically serves through **waitress** (a cross-platform,
+thread-pool WSGI server) instead of the Flask dev server. To force the dev
+server, pass `--debug`.
+
+```bash
+# waitress (cross-platform; installed by default)
+python web_api.py --db sample_company.db --host 0.0.0.0 --port 8080
+
+# Or via the WSGI entry point with any server (waitress CLI, gunicorn, uWSGI…)
+waitress-serve --listen=0.0.0.0:8080 --threads=8 wsgi:app
+```
+
+On Linux/macOS you may prefer **gunicorn** for multi-process scaling:
+
+```bash
+pip install gunicorn
+gunicorn -c gunicorn.conf.py wsgi:app
+```
+
+> **Scaling note:** the web API keeps one ML agent session (loaded data +
+> trained model) per process. For horizontal scaling, run multiple worker
+> processes (gunicorn workers); each worker has its own independent session,
+> or put a load balancer in front of several instances.
+
+### Runtime configuration (environment variables)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MLAGENT_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `MLAGENT_WEB_HOST` / `MLAGENT_WEB_PORT` | `127.0.0.1` / `5000` | Bind address |
+| `MLAGENT_WEB_MAX_CONTENT_LENGTH` | `52428800` (50 MB) | Max upload/request body size |
+| `MLAGENT_WEB_UPLOAD_DIR` | `~/.mlagent/data/uploads` | Where DB/model uploads + per-db stores are kept |
+| `MLAGENT_WEB_TRUST_PROXY` | `false` | Honor `X-Forwarded-*` when behind a reverse proxy |
+| `MLAGENT_DB_POOL_SIZE` / `MLAGENT_DB_MAX_OVERFLOW` | `10` / `20` | Connection-pool bounds (network DBs) |
+| `MLAGENT_DB_POOL_RECYCLE` / `MLAGENT_DB_POOL_TIMEOUT` | `1800` / `30` (s) | Rotate/reclaim idle pooled connections |
+| `MLAGENT_DB_POOL_PRE_PING` | `true` | Detect + replace dropped connections before use |
+| `MLAGENT_SQLITE_BUSY_TIMEOUT` | `30000` (ms) | How long to wait on a locked SQLite file |
+| `MLAGENT_WSGI_THREADS` | `8` | Worker threads for the waitress server |
+| `MLAGENT_TRAIN_N_JOBS` | `1` | Default parallelism for CV/tuning |
+
+### What changed for production
+
+- **Structured logging** replaces ad-hoc printing (`ml_agent/logging_utils.py`,
+  request logging in `web_api.py`).
+- **Config centralized** in `ml_agent/config.py` — no hard-coded tunables.
+- **Database engine lifecycle** (`ml_agent/database.py`) now uses a bounded,
+  pre-pinging connection pool with recycle/timeout for network databases and
+  correct busy-timeout + cross-thread settings for SQLite — so concurrent API
+  requests no longer exhaust or cross the in-process connection pool.
+- **Agent state is guarded** by an RLock so background training/ops cannot tear
+  the shared agent (model, `current_df`) mid-request, while reads stay lock-free.
+- **Request size caps + proxy support** and a WSGI entry point (`wsgi.py`).
+
 ## Project Structure
 
 ```
 ├── ml_agent/
 │   ├── __init__.py          # Package exports
 │   ├── agent.py             # Main MLAgent orchestrator
-│   ├── database.py          # SQL database processing
+│   ├── config.py            # Centralized env-driven configuration
+│   ├── logging_utils.py     # Structured logging setup
+│   ├── database.py          # SQL database processing (pooled engine)
 │   ├── model_selector.py    # Automatic model selection
 │   ├── predictor.py         # Prediction engine
 │   ├── analyzer.py          # Data analysis module
@@ -618,7 +685,9 @@ curl -X POST http://localhost:5000/api/predict \
 │       ├── index.html       # Web dashboard
 │       ├── style.css        # Dashboard styles
 │       └── app.js           # Dashboard JavaScript
-├── web_api.py               # Flask web API server
+├── web_api.py               # Flask web API server (waitress in production)
+├── wsgi.py                  # WSGI entry point for production servers
+├── gunicorn.conf.py         # Gunicorn config (Linux/macOS multi-process)
 ├── main.py                  # CLI entry point
 ├── create_sample_db.py      # Sample database generator
 ├── demo.py                  # Full workflow demo
