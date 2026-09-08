@@ -1,6 +1,8 @@
 """Main ML Agent orchestrator."""
+import hashlib
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, List, Optional, Union
 import pandas as pd
@@ -67,6 +69,8 @@ class MLAgent:
         self.monitor = ModelMonitor()
         self.n_jobs: int = 1
         self._analysis_cache: Dict[str, Any] = {}
+        self._cache_lock = threading.RLock()
+        self._cache_dir: Optional[str] = None
         self._suggested_targets: List[Dict[str, Any]] = []
         self._cache_token: Optional[str] = None
         self.llm: Optional[LLMAdvisor] = None
@@ -93,10 +97,11 @@ class MLAgent:
         """Get summary of all tables."""
         return self.db.get_table_summary()
 
-    def load_table(self, table_name: str, limit: Optional[int] = None) -> pd.DataFrame:
-        """Load a table into memory."""
+    def load_table(self, table_name: str, limit: Optional[int] = None,
+                   offset: Optional[int] = None) -> pd.DataFrame:
+        """Load a table (optionally paginated with limit/offset) into memory."""
         self.current_table = table_name
-        self.current_df = self.db.load_table(table_name, limit)
+        self.current_df = self.db.load_table(table_name, limit, offset)
         self._invalidate_analysis_cache()
         return self.current_df
 
@@ -594,8 +599,9 @@ class MLAgent:
             raise RuntimeError("No data loaded. Call load_table() or load_query_as_data() first.")
 
         cache_key = f"{analysis_type}|{target_column}|{self._data_token()}"
-        if use_cache and cache_key in self._analysis_cache:
-            return self._analysis_cache[cache_key]
+        cached = self._analysis_cache_get(cache_key)
+        if use_cache and cached is not None:
+            return cached
 
         self.analyzer = DataAnalyzer(self.current_df, target_column or self.target_column)
         if analysis_type == "summary":
@@ -611,8 +617,59 @@ class MLAgent:
         else:
             raise ValueError(f"Unknown analysis type: {analysis_type}")
 
-        self._analysis_cache[cache_key] = result
+        self._analysis_cache_set(cache_key, result)
         return result
+
+    # -- Persistent (disk-backed) analysis cache (B3) -----------------------
+
+    def enable_disk_cache(self, cache_dir: Optional[str] = None) -> None:
+        """Point the analysis cache at a directory for persistence across
+        restarts. Analysis results are cheap to recompute but expensive under
+        load; persisting them (keyed by data fingerprint + analysis type) makes
+        repeated deep analysis nearly free and is shared across workers."""
+        from . import config as cfg  # local to avoid import cost at module load
+
+        self._cache_dir = cache_dir or cfg.get_cache_dir()
+        if self._cache_dir:
+            os.makedirs(self._cache_dir, exist_ok=True)
+
+    def disable_disk_cache(self) -> None:
+        self._cache_dir = None
+
+    def _cache_path(self, cache_key: str) -> Optional[str]:
+        if not self._cache_dir:
+            return None
+        digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+        return os.path.join(self._cache_dir, f"{digest}.json")
+
+    def _analysis_cache_get(self, cache_key: str) -> Optional[Any]:
+        with self._cache_lock:
+            if cache_key in self._analysis_cache:
+                return self._analysis_cache[cache_key]
+        path = self._cache_path(cache_key)
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            return payload.get("result")
+        except Exception:
+            return None
+
+    def _analysis_cache_set(self, cache_key: str, result: Any) -> None:
+        with self._cache_lock:
+            self._analysis_cache[cache_key] = result
+        path = self._cache_path(cache_key)
+        if not path:
+            return
+        try:
+            import json as _json
+
+            with open(path, "w", encoding="utf-8") as fh:
+                _json.dump({"key": cache_key, "result": result}, fh, default=str)
+        except Exception:
+            # Disk cache is best-effort; never fail a request because of it.
+            pass
 
     def detect_anomalies(
         self,
@@ -669,6 +726,7 @@ class MLAgent:
         tuning: Optional[str] = None,
         n_jobs: Optional[int] = None,
         early_stop: Optional[int] = None,
+        X: Optional[pd.DataFrame] = None,
     ) -> Dict[str, Any]:
         """
         Train the best model for the given target column.
@@ -680,6 +738,10 @@ class MLAgent:
             progress_callback: Optional callback invoked as models are evaluated.
             should_stop: Optional callable returning True to cancel training.
             tuning: "off", "quick", or "full" — hyperparameter-tune the best model.
+            X: Optional pre-loaded training DataFrame. When provided, training
+                uses X and does NOT overwrite ``self.current_df``. This enables
+                the web layer to snapshot data under a brief lock and run the
+                (potentially long) model search off-lock.
 
         Returns:
             Model selection results with best model and metrics.
@@ -687,10 +749,13 @@ class MLAgent:
         if table_name:
             self.load_table(table_name)
 
-        if self.current_df is None:
-            raise RuntimeError("No data loaded. Call load_table() or provide table_name.")
+        df = X if X is not None else self.current_df
+        if df is None:
+            raise RuntimeError(
+                "No data loaded. Call load_table() or provide table_name / X."
+            )
 
-        if target_column not in self.current_df.columns:
+        if target_column not in df.columns:
             raise ValueError(f"Target column '{target_column}' not found in data.")
 
         self.target_column = target_column
@@ -709,11 +774,11 @@ class MLAgent:
             target_column=target_column,
             task_type=task_type or self.task_type,
             tuning=tuning,
-            meta={"rows": int(len(self.current_df)), "columns": list(self.current_df.columns)},
+            meta={"rows": int(len(df)), "columns": list(df.columns)},
         )
         try:
             results = self.model_selector.select(
-                self.current_df,
+                df,
                 progress_callback=progress_callback,
                 should_stop=should_stop,
                 tuning=tuning,

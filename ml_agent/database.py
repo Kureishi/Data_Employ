@@ -9,6 +9,24 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 
+def _atomic_json_dump(data: Any, path: str) -> None:
+    """Atomically write ``data`` to ``path`` (tmp file + rename) so a crash
+    mid-write cannot corrupt an existing store file."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+
 class DatabaseProcessor:
     """Processes SQL databases to extract schema and load data."""
 
@@ -68,6 +86,29 @@ class DatabaseProcessor:
                     )
 
             self.engine = create_engine(url, **kwargs)
+
+            # Server-side statement timeout (Tier 1/A4): apply per-connection so a
+            # runaway query is cancelled by the DB engine instead of by spawning a
+            # Python thread per query. Best-effort where the dialect supports it.
+            stmt_ms = cfg.DB_STMT_TIMEOUT * 1000
+            if not backend == "sqlite" and stmt_ms > 0:
+                from sqlalchemy import event as _sa_event
+
+                def _apply_statement_timeout(dbapi_conn, _rec):  # noqa: ANN001
+                    try:
+                        if backend == "postgresql":
+                            dbapi_conn.cursor().execute(
+                                f"SET statement_timeout = {int(stmt_ms)}"
+                            )
+                        elif backend in ("mysql", "mariadb"):
+                            dbapi_conn.cursor().execute(
+                                f"SET SESSION max_execution_time = {int(stmt_ms)}"
+                            )
+                    except Exception:
+                        pass
+
+                _sa_event.listen(self.engine, "connect", _apply_statement_timeout)
+
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
         except Exception as e:
@@ -228,10 +269,22 @@ class DatabaseProcessor:
                 continue
         return summary
 
-    def load_table(self, table: str, limit: Optional[int] = None) -> pd.DataFrame:
+    def load_table(self, table: str, limit: Optional[int] = None,
+                   offset: Optional[int] = None) -> pd.DataFrame:
         q = f'SELECT * FROM "{table}"'
-        if limit:
-            q += f" LIMIT {limit}"
+        parts: List[str] = []
+        try:
+            if limit:
+                parts.append(f"LIMIT {int(limit)}")
+            if offset:
+                if not limit:
+                    # Offset requires a bound; SQLite accepts LIMIT -1 as "no limit".
+                    parts.append("LIMIT -1")
+                parts.append(f"OFFSET {int(offset)}")
+        except (TypeError, ValueError):
+            pass
+        if parts:
+            q += " " + " ".join(parts)
         return pd.read_sql_query(q, self.engine)
 
     # ========== Read-only safety + query timeout (Feature 6) ==========
@@ -529,11 +582,7 @@ class DatabaseProcessor:
                 continue
         self._profiles[name or "profile"] = profile
         if self._profiles_path:
-            try:
-                with open(self._profiles_path, "w", encoding="utf-8") as f:
-                    json.dump(self._profiles, f, indent=2)
-            except Exception:
-                pass
+            _atomic_json_dump(self._profiles, self._profiles_path)
         return profile
 
     def list_profiles(self) -> List[str]:
@@ -624,11 +673,7 @@ class DatabaseProcessor:
 
     def _persist_queries(self) -> None:
         if self._queries_path:
-            try:
-                with open(self._queries_path, "w", encoding="utf-8") as fh:
-                    json.dump(self._queries, fh, indent=2)
-            except Exception:
-                pass
+            _atomic_json_dump(self._queries, self._queries_path)
 
     def __enter__(self):
         return self

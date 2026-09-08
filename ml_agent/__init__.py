@@ -19,7 +19,7 @@ from .recipes import RecipeStore
 from .snapshots import SnapshotStore
 from .cli import build_parser, run_cli, main
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __all__ = [
     "MLAgent", "DatabaseProcessor", "ModelSelector", "Predictor", "DataAnalyzer",
     "DataPreprocessor", "LLMAdvisor", "LLMAdvisorError", "create_llm_advisor",

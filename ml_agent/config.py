@@ -100,6 +100,18 @@ def get_upload_dir() -> str:
     return _get_str("MLAGENT_WEB_UPLOAD_DIR", os.path.join(_default_data_dir(), "uploads"))
 
 
+def get_cache_dir() -> str:
+    """Directory for the on-disk analysis cache (created on demand)."""
+    return _get_str(
+        "MLAGENT_CACHE_DIR", os.path.join(_default_data_dir(), "cache")
+    )
+
+
+def get_data_dir() -> str:
+    """Root data directory for runtime artifacts."""
+    return _default_data_dir()
+
+
 def _default_data_dir() -> str:
     """Cross-platform data directory for runtime artifacts (uploads/stores)."""
     if not hasattr(_default_data_dir, "_cache"):
@@ -117,6 +129,46 @@ TRAIN_DEFAULT_CV_FOLDS = _get_int("MLAGENT_TRAIN_CV_FOLDS", 5)
 TRAIN_DEFAULT_N_JOBS = _get_int("MLAGENT_TRAIN_N_JOBS", 1)
 # Early-stop: stop evaluating candidate models after N models without improvement.
 TRAIN_EARLY_STOP_PATIENCE = _get_int("MLAGENT_TRAIN_EARLY_STOP_PATIENCE", 4)
+
+
+# ============ Background jobs (Tier 2/3) ============
+
+# Maximum number of concurrent background operation jobs. Beyond this, new job
+# submissions receive HTTP 429 (Too Many Requests) instead of spawning threads.
+MAX_CONCURRENT_JOBS = _get_int("MLAGENT_MAX_CONCURRENT_JOBS", 4)
+
+# Wall-clock ceiling (seconds) for a background operation job. When exceeded
+# the job is marked ``timed_out`` and no further progress is accepted.
+JOB_MAX_WALLCLOCK = _get_int("MLAGENT_JOB_MAX_WALLCLOCK", 3600)
+
+# Maximum result size (bytes) JSON-serialized per job result, to avoid bloating
+# the in-memory / on-disk job store with a giant DataFrame dump.
+JOB_MAX_RESULT_BYTES = _get_int("MLAGENT_JOB_MAX_RESULT_BYTES", 8 * 1024 * 1024)
+
+# Optional path for a SQLite-backed job store that survives restarts.
+# When empty, jobs are held in memory only.
+
+
+def get_jobs_db_path() -> Optional[str]:
+    p = _get_str("MLAGENT_JOBS_DB_PATH", "").strip()
+    return p if p else None
+
+
+# ============ Database statement timeout (Tier 1) ============
+
+# Server-side statement timeout in seconds, applied where the dialect supports
+# it (Postgres statement_timeout / MySQL max_execution_time). 0 = disabled.
+DB_STMT_TIMEOUT = _get_int("MLAGENT_DB_STMT_TIMEOUT", 0)
+
+
+# ============ Rate limiting + auth (Tier 2) ============
+
+PREDICT_PAGE_SIZE = _get_int("MLAGENT_PREDICT_PAGE_SIZE", 1000)
+RATE_LIMIT_PER_MINUTE = _get_int("MLAGENT_RATE_LIMIT_PER_MINUTE", 0)
+# Optional shared bearer token. When set, API requests must send it.
+API_TOKEN = _get_str("MLAGENT_API_TOKEN", "").strip() or None
+# Disable request logging when True (reduce log noise at very high throughput).
+DISABLE_REQUEST_LOG = _get_bool("MLAGENT_DISABLE_REQUEST_LOG", False)
 
 
 # ============ WSGI / deployment ============

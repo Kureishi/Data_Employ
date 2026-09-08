@@ -163,28 +163,34 @@ class ModelSelector:
         features = df.drop(columns=[self.target_column])
         target = df[self.target_column]
 
-        # Remove constant columns and ID-like columns
-        constants = []
-        for col in features.columns:
-            if features[col].nunique(dropna=False) <= 1:
-                constants.append(col)
-            elif not pd.api.types.is_numeric_dtype(features[col].dtype) and features[col].nunique() == len(features[col]):
-                constants.append(col)  # high-cardinality object column (likely ID)
-            elif pd.api.types.is_numeric_dtype(features[col].dtype):
-                # Detect auto-increment primary key columns:
-                # must be unique (all distinct) AND sequential starting from 1.
-                # Foreign keys (repeated values) are kept as meaningful features.
-                non_null = features[col].dropna()
-                if len(non_null) == len(features) and non_null.nunique() == len(features):
-                    unique_vals = sorted(non_null.unique())
-                    is_sequential = (
-                        len(unique_vals) > 1
-                        and unique_vals[0] == 1
-                        and np.all(np.diff(unique_vals) == 1)
-                    )
-                    if is_sequential and col.lower().endswith(("_id", "id")):
-                        constants.append(col)
-        features = features.drop(columns=constants)
+        total = len(features)
+        # One vectorized pass per column (constant / high-cardinality / dtypes).
+        nunique = features.nunique(dropna=False)
+        non_null = features.count()
+        is_num = features.dtypes.map(pd.api.types.is_numeric_dtype)
+
+        constants = set(nunique[nunique <= 1].index)
+        # High-cardinality object column (likely ID): every row distinct.
+        obj_high_card = (~is_num) & (nunique == total)
+        constants |= set(obj_high_card[obj_high_card].index)
+
+        # Sequential auto-increment primary-key detection (per column; rare).
+        # Must be all non-null, fully unique, start at 1, increment by 1 and be
+        # named like an id -- otherwise it is a meaningful numeric feature.
+        for col in is_num[is_num].index:
+            if col in constants or nunique[col] != total or non_null[col] != total:
+                continue
+            uvals = np.sort(features[col].dropna().unique())
+            if (
+                len(uvals) > 1
+                and uvals[0] == 1
+                and np.all(np.diff(uvals) == 1)
+                and col.lower().endswith(("_id", "id"))
+            ):
+                constants.add(col)
+
+        if constants:
+            features = features.drop(columns=list(constants))
 
         self.feature_columns = list(features.columns)
 

@@ -12,6 +12,9 @@ import logging
 import os
 import threading
 import time
+import uuid
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -20,6 +23,7 @@ from werkzeug.utils import secure_filename
 
 from ml_agent import MLAgent
 from ml_agent import config as cfg
+from ml_agent.job_store import JobStore
 from ml_agent.logging_utils import configure_logging
 
 log = logging.getLogger("ml_agent.web_api")
@@ -43,23 +47,57 @@ if cfg.WEB_TRUST_PROXY:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Global agent state. A single agent holds mutable state (current_df,
-# model_selector, ...). AGENT_LOCK serializes *state-mutating* operations that
-# are launched from background threads (connect/disconnect/train/op jobs) so
-# they cannot tear while another request is mid-operation. Pure reads stay
-# lock-free and therefore concurrent.
+# model_selector, ...). AGENT_LOCK serializes *state-mutating* operations from
+# background threads (connect/disconnect/train/op jobs). Pure reads stay
+# lock-free. AGENT is the backward-compatible *default* session; named sessions
+# (Tier 3/C3) are stored in SESSIONS keyed by session id.
 AGENT: Optional[MLAgent] = None
 AGENT_LOCK = threading.RLock()
+
+# ---- Session isolation (C3) -------------------------------------------------
+# Clients may pass an X-Session-Id header to get an isolated agent per session
+# (enables per-session / horizontally-scaled workflows). The default session is
+# the legacy `AGENT` global so existing clients keep working.
+SESSIONS: Dict[str, MLAgent] = {}
+SESSION_LOCK = threading.RLock()
+DEFAULT_SESSION_ID = "default"
+
+
+def _current_session_id() -> str:
+    sid = request.headers.get("X-Session-Id", "").strip()
+    return sid if sid else DEFAULT_SESSION_ID
+
+
+# ---- Async job subsystem (A3 bounded, A5 durable) ---------------------------
+# Operation jobs run on a bounded thread pool (instead of one raw daemon thread
+# per job) so a flood of requests cannot spawn unbounded threads. A semaphore
+# enforces a hard cap; submissions beyond it receive 429.
+JOB_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, cfg.MAX_CONCURRENT_JOBS))
+JOB_SEM = threading.BoundedSemaphore(max(1, cfg.MAX_CONCURRENT_JOBS))
+
+# Durable job store (SQLite) so jobs survive restarts. Optional; in-memory only
+# when MLAGENT_JOBS_DB_PATH is unset.
+JOBS_DB = JobStore(cfg.get_jobs_db_path())
+JOBS_DB.mark_stale_interrupted()
 
 # Async training-job registry (id -> job dict)
 TRAIN_JOBS: Dict[str, Dict[str, Any]] = {}
 TRAIN_LOCK = threading.Lock()
 
-# Generic async operation-job registry (for analyze / synthesize / monitor /
-# anomaly / repredict / recipe-apply), plus a short-lived notification queue.
+# Generic async operation-job registry (analyze/synthesize/monitor/anomaly/...)
 OP_JOBS: Dict[str, Dict[str, Any]] = {}
 OP_LOCK = threading.Lock()
 NOTIFICATIONS: List[Dict[str, Any]] = []
 MAX_NOTIFICATIONS = cfg.WEB_MAX_NOTIFICATIONS
+
+# Graceful-shutdown flag (C2): when set, new jobs/requests are refused and the
+# server drains in-flight work before exiting.
+RUNNING = True
+SHUTDOWN_LOCK = threading.Lock()
+
+# Lightweight request metrics for /status (C1).
+METRICS_LOCK = threading.Lock()
+METRICS = {"requests": 0, "errors": 0, "by_path": {}, "started_at": time.time()}
 
 # Upload directory for database / model files (configurable via env for prod).
 UPLOAD_DIR = cfg.get_upload_dir()
@@ -71,12 +109,79 @@ ALLOWED_MODEL_EXTENSIONS = {".joblib", ".pkl", ".pickle"}
 # ============ Helpers ============
 
 
-def _get_agent() -> MLAgent:
-    """Return the shared agent instance."""
+def _get_agent(session_id: Optional[str] = None) -> MLAgent:
+    """Return the agent for the current session (or a named one).
+
+    When ``session_id`` is omitted the request's ``X-Session-Id`` header is
+    used; the default session maps to the legacy global ``AGENT`` so existing
+    clients keep working unchanged.
+    """
     global AGENT
-    if AGENT is None:
-        raise RuntimeError("No database connected. POST /api/connect first.")
-    return AGENT
+    sid = session_id or _current_session_id()
+    if sid == DEFAULT_SESSION_ID:
+        if AGENT is None:
+            raise RuntimeError("No database connected. POST /api/connect first.")
+        return AGENT
+    with SESSION_LOCK:
+        agent = SESSIONS.get(sid)
+    if agent is None:
+        raise RuntimeError(
+            "Unknown or expired session. POST /api/connect with an "
+            "X-Session-Id header to create one."
+        )
+    return agent
+
+
+def _make_agent(connection: str) -> MLAgent:
+    """Build, connect and configure a new MLAgent (used on connect/upload)."""
+    agent = MLAgent(connection)
+    _init_agent_stores(agent)
+    # Persistent (disk-backed) analysis cache, shared across workers (B3).
+    agent.enable_disk_cache()
+    return agent
+
+
+def _connect_session(session_id: str, connection: str) -> MLAgent:
+    """Create (or replace) the agent for a session and connect it to the DB."""
+    global AGENT
+    if session_id == DEFAULT_SESSION_ID:
+        if AGENT is not None:
+            try:
+                AGENT.close()
+            except Exception:
+                pass
+        AGENT = _make_agent(connection)
+        return AGENT
+    with SESSION_LOCK:
+        existing = SESSIONS.pop(session_id, None)
+    if existing is not None:
+        try:
+            existing.close()
+        except Exception:
+            pass
+    agent = _make_agent(connection)
+    with SESSION_LOCK:
+        SESSIONS[session_id] = agent
+    return agent
+
+
+def _close_session(session_id: str) -> None:
+    global AGENT
+    if session_id == DEFAULT_SESSION_ID:
+        if AGENT is not None:
+            try:
+                AGENT.close()
+            except Exception:
+                pass
+        AGENT = None
+        return
+    with SESSION_LOCK:
+        agent = SESSIONS.pop(session_id, None)
+    if agent is not None:
+        try:
+            agent.close()
+        except Exception:
+            pass
 
 
 def _init_agent_stores(agent: MLAgent) -> None:
@@ -132,6 +237,114 @@ def _df_to_html_table(df: pd.DataFrame, max_rows: int = 100) -> str:
     return df.head(max_rows).to_html(classes="display nowrap", index=False)
 
 
+# ============ Auth + rate limiting + metrics + health (Tier 2) ============
+
+
+def _is_rate_limited(key: str, limit_per_min: int) -> bool:
+    """Fixed-window in-memory rate limiter (per key). Returns True if the
+    caller exceeded the per-minute allowance for that key."""
+    if limit_per_min <= 0:
+        return False
+    now = time.time()
+    window = 60.0
+    with METRICS_LOCK:
+        buckets = getattr(_is_rate_limited, "_buckets", {})
+        strip = getattr(_is_rate_limited, "_strip", deque())
+        dq = buckets.get(key)
+        if dq is None:
+            dq = deque()
+            buckets[key] = dq
+            strip.append(key)
+        # drop stale keys to avoid unbounded memory growth
+        while strip and len(buckets) > 10_000:
+            stale = strip.popleft()
+            buckets.pop(stale, None)
+        while dq and now - dq[0] >= window:
+            dq.popleft()
+        if len(dq) >= limit_per_min:
+            _is_rate_limited._buckets = buckets
+            _is_rate_limited._strip = strip
+            return True
+        dq.append(now)
+        _is_rate_limited._buckets = buckets
+        _is_rate_limited._strip = strip
+        return False
+
+
+def _client_key() -> str:
+    return request.remote_addr or "unknown"
+
+
+@app.before_request
+def _apply_auth_and_limits() -> Optional[Response]:
+    # Liveness probes and static assets bypass auth/limits.
+    if request.path.startswith("/health") or request.path == "/":
+        return None
+    # Optional shared bearer token (D1).
+    if cfg.API_TOKEN:
+        auth = request.headers.get("Authorization", "")
+        supplied = auth[7:] if auth.startswith("Bearer ") else request.headers.get("X-API-Token", "")
+        if supplied != cfg.API_TOKEN:
+            return _error("Unauthorized.", status=401)
+    # Rate-limit mutating API calls (POST/PUT/DELETE) per client IP.
+    if request.method in ("POST", "PUT", "DELETE") and cfg.RATE_LIMIT_PER_MINUTE > 0:
+        if _is_rate_limited(f"{_client_key()}:{request.method}:{request.path}", cfg.RATE_LIMIT_PER_MINUTE):
+            return _error("Rate limit exceeded. Slow down and retry later.", status=429)
+    return None
+
+
+@app.before_request
+def _metrics_and_shutdown() -> Optional[Response]:
+    if not RUNNING and not request.path.startswith("/health"):
+        return _error("Server is shutting down. No new requests.", status=503)
+    return None
+
+
+@app.route("/health", methods=["GET"])
+def health() -> Response:
+    """Liveness probe for load balancers / orchestrators."""
+    return jsonify({"status": "ok", "time": time.time()})
+
+
+@app.route("/health/ready", methods=["GET"])
+def health_ready() -> Response:
+    """Readiness probe: 200 when connected + (optionally) a model is loaded."""
+    try:
+        agent = _get_agent()
+        ready = agent.db.engine is not None
+        body: Dict[str, Any] = {"ready": ready, "connected": True}
+        if ready:
+            body["tables"] = agent.list_tables()
+        code = 200 if ready else 503
+        return jsonify(body), code
+    except Exception:
+        return jsonify({"ready": False, "connected": False}), 503
+
+
+@app.route("/status", methods=["GET"])
+def status() -> Response:
+    """Operational metrics: request counters, active jobs, session count."""
+    with METRICS_LOCK:
+        metrics = {
+            "requests": METRICS["requests"],
+            "errors": METRICS["errors"],
+            "uptime_s": round(time.time() - METRICS["started_at"], 1),
+            "by_path": dict(sorted(METRICS["by_path"].items(), key=lambda kv: -kv[1])[:20]),
+        }
+    with OP_LOCK:
+        active = sum(1 for j in OP_JOBS.values() if j.get("status") == "running")
+    with SESSION_LOCK:
+        session_count = len(SESSIONS) + (1 if AGENT is not None else 0)
+    return jsonify({
+        "ok": True,
+        "metrics": metrics,
+        "active_op_jobs": active,
+        "sessions": session_count,
+        "concurrency_limit": cfg.MAX_CONCURRENT_JOBS,
+        "shutting_down": not RUNNING,
+    })
+
+
 # ============ Async operation jobs + notifications (Tier 2: async everything) ============
 
 
@@ -151,42 +364,66 @@ def _get_op_handler(op_name: str):
     return OP_HANDLERS.get(op_name)
 
 
+class JobBusyError(Exception):
+    """Raised when the worker pool is saturated (returns HTTP 429)."""
+
+
 def _start_op_job(op_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Launch an async operation job. Returns the job record."""
-    global AGENT
+    """Launch a bounded, durable async operation job.
+
+    Returns the job record. Raises JobBusyError when the concurrency cap is hit.
+    """
     agent = _get_agent()
     handler = _get_op_handler(op_name)
     if handler is None:
         raise ValueError(f"Unknown operation: {op_name}")
 
-    job_id = f"op_{len(OP_JOBS) + 1}"
+    # A3: refuse new submissions once the worker pool is saturated.
+    if not JOB_SEM.acquire(blocking=False):
+        raise JobBusyError(
+            f"Too many background jobs running (limit {cfg.MAX_CONCURRENT_JOBS}). "
+            "Wait for one to finish and retry."
+        )
+
+    job_id = f"op_{uuid.uuid4().hex[:8]}"  # A1: collision-safe id
+    started_at = time.time()
     job: Dict[str, Any] = {
         "id": job_id,
         "operation": op_name,
         "status": "running",
         "result": None,
         "error": None,
+        "started_at": started_at,
     }
+    # A5: persist so the job survives a restart and is inspectable.
+    JOBS_DB.put(job_id, "op", op_name, "running", params=params, created_at=started_at)
 
     def worker() -> None:
         try:
-            # Serialize agent state mutation against connect/disconnect/other
-            # background jobs so a swap of current_df / predictor can't happen
-            # while another request or job is reading it.
             with AGENT_LOCK:
                 result = handler(agent, params)
+            # Enforce a soft wall-clock ceiling: report timeout if exceeded.
+            if time.time() - started_at > cfg.JOB_MAX_WALLCLOCK:
+                job["status"] = "timed_out"
+                job["error"] = f"Job exceeded {cfg.JOB_MAX_WALLCLOCK}s wall-clock limit."
+                JOBS_DB.update(job_id, status="timed_out", error=job["error"])
+                return
             with OP_LOCK:
                 job["result"] = result
             job["status"] = "done"
+            JOBS_DB.update(job_id, status="done", result=result)
             _add_notification(f"{op_name} completed", "success", op_name)
         except Exception as e:
             job["status"] = "error"
             job["error"] = str(e)
+            JOBS_DB.update(job_id, status="error", error=str(e))
             _add_notification(f"{op_name} failed: {e}", "error", op_name)
+        finally:
+            JOB_SEM.release()
 
     with OP_LOCK:
         OP_JOBS[job_id] = job
-    threading.Thread(target=worker, daemon=True).start()
+    JOB_EXECUTOR.submit(worker)
     return job
 
 
@@ -332,15 +569,18 @@ def api_state():
 
 @app.route("/api/connect", methods=["POST"])
 def api_connect():
-    """Connect to a database, replacing any existing connection."""
+    """Connect to a database. With an X-Session-Id header (or body session_id),
+    the agent is created in its own isolated session (C3). Otherwise the
+    default (legacy) global agent is used."""
     global AGENT
     data = request.get_json(silent=True) or {}
     connection = data.get("connection") or data.get("db")
     if not connection:
         return _error("Connection string or SQLite file path is required.")
+    session_id = (data.get("session_id") or _current_session_id()).strip()
 
-    # If we already have an agent with the same connection, just return state
-    if AGENT is not None:
+    # Default session: reuse an existing agent already on this connection.
+    if session_id == DEFAULT_SESSION_ID and AGENT is not None:
         try:
             existing = _get_agent()
             if existing.db.connection_string:
@@ -348,36 +588,30 @@ def api_connect():
                 if existing_cs == connection or existing.db.connection_string == connection:
                     return _success(
                         connected=True,
+                        session_id=session_id,
                         tables=existing.list_tables(),
                         message="Already connected.",
                     )
         except Exception:
             pass
 
-    # Create new agent
-    if AGENT is not None:
-        try:
-            AGENT.close()
-        except Exception:
-            pass
-
     try:
-        AGENT = MLAgent(connection)
-        _init_agent_stores(AGENT)
-        tables = AGENT.list_tables()
+        agent = _connect_session(session_id, connection)
+        tables = agent.list_tables()
         return _success(
             connected=True,
+            session_id=session_id,
             tables=tables,
             message=f"Connected to {connection}",
         )
     except Exception as e:
-        AGENT = None
+        _close_session(session_id)
         return _error(f"Failed to connect: {e}")
 
 
 @app.route("/api/upload-db", methods=["POST"])
 def api_upload_db():
-    """Upload a database file and connect to it."""
+    """Upload a database file and connect (optionally to a named session)."""
     global AGENT
     if "file" not in request.files:
         return _error("No file uploaded. Use multipart/form-data with a 'file' field.")
@@ -398,38 +632,26 @@ def api_upload_db():
     save_path = os.path.join(UPLOAD_DIR, filename)
     file.save(save_path)
 
-    # Close any existing agent
-    if AGENT is not None:
-        try:
-            AGENT.close()
-        except Exception:
-            pass
-
+    session_id = (request.form.get("session_id") or _current_session_id()).strip()
     try:
-        AGENT = MLAgent(save_path)
-        _init_agent_stores(AGENT)
-        tables = AGENT.list_tables()
+        agent = _connect_session(session_id, save_path)
+        tables = agent.list_tables()
         return _success(
             connected=True,
+            session_id=session_id,
             tables=tables,
             message=f"Connected to uploaded database: {filename}",
             path=save_path,
         )
     except Exception as e:
-        AGENT = None
+        _close_session(session_id)
         return _error(f"Failed to connect to uploaded database: {e}")
 
 
 @app.route("/api/disconnect", methods=["POST"])
 def api_disconnect():
-    """Disconnect from the database."""
-    global AGENT
-    if AGENT is not None:
-        try:
-            AGENT.close()
-        except Exception:
-            pass
-    AGENT = None
+    """Disconnect from the database (the current session's agent)."""
+    _close_session(_current_session_id())
     return _success(message="Disconnected.")
 
 
@@ -1116,8 +1338,17 @@ def api_train():
                 if job.get("status") in ("running", "cancelling"):
                     return _error("A training job is already running. Cancel it first or wait.")
 
-        job_id = f"train_{len(TRAIN_JOBS) + 1}"
+        # Single concurrent training job per process, and refuse while draining.
+        with TRAIN_LOCK:
+            for job in TRAIN_JOBS.values():
+                if job.get("status") in ("running", "cancelling"):
+                    return _error("A training job is already running. Cancel it first or wait.")
+        if not RUNNING:
+            return _error("Server is shutting down. No new training.", status=503)
+
+        job_id = f"train_{uuid.uuid4().hex[:8]}"  # A1: collision-safe id
         stop_flag = [False]
+        started_at = time.time()
         job: Dict[str, Any] = {
             "id": job_id,
             "status": "running",
@@ -1126,6 +1357,8 @@ def api_train():
             "error": None,
             "training": None,
         }
+        JOBS_DB.put(job_id, "train", None, "running",
+                    params={"target_column": target}, created_at=started_at)
 
         def progress_cb(info: Dict[str, Any]) -> None:
             job["progress"] = info
@@ -1133,24 +1366,35 @@ def api_train():
                 pass
 
         def should_stop() -> bool:
-            return bool(stop_flag[0])
+            # Honor explicit cancellation (set via /api/train/cancel on this
+            # shared job dict) AND the wall-clock ceiling.
+            if stop_flag[0] or job.get("status") == "cancelling":
+                return True
+            return time.time() - started_at > cfg.JOB_MAX_WALLCLOCK
 
         def worker() -> None:
             try:
-                # Hold the agent-state lock for the whole training run so the
-                # resulting predictor/model_selector/current_df swap is atomic
-                # w.r.t. connect/disconnect and other background jobs.
+                # A2: snapshot the training data under a *brief* lock, then run
+                # the (long) model search off-lock so connect/disconnect/other
+                # requests are never blocked for the whole fit.
+                snapshot = None
                 with AGENT_LOCK:
-                    results = agent.train(
-                        target_column=target,
-                        task_type=task_type,
-                        table_name=table,
-                        progress_callback=progress_cb,
-                        should_stop=should_stop,
-                        tuning=tuning,
-                        n_jobs=n_jobs,
-                        early_stop=early_stop,
-                    )
+                    if table:
+                        agent.load_table(table)
+                    if agent.current_df is not None:
+                        snapshot = agent.current_df.copy()
+                if snapshot is None:
+                    raise RuntimeError("No data loaded to train on.")
+                results = agent.train(
+                    target_column=target,
+                    task_type=task_type,
+                    progress_callback=progress_cb,
+                    should_stop=should_stop,
+                    tuning=tuning,
+                    n_jobs=n_jobs,
+                    early_stop=early_stop,
+                    X=snapshot,
+                )
                 job["status"] = "done"
                 job["training"] = _serialize_training(results)
                 job["progress"] = {
@@ -1159,12 +1403,24 @@ def api_train():
                     "model": job["progress"].get("model", ""),
                     "scores": job["progress"].get("scores", {}),
                 }
+                JOBS_DB.update(job_id, status="done")
             except InterruptedError as e:
                 job["status"] = "cancelled"
                 job["error"] = str(e)
+                JOBS_DB.update(job_id, status="cancelled", error=str(e))
+            except RuntimeError as e:
+                if time.time() - started_at > cfg.JOB_MAX_WALLCLOCK:
+                    job["status"] = "timed_out"
+                    job["error"] = f"Training exceeded {cfg.JOB_MAX_WALLCLOCK}s."
+                    JOBS_DB.update(job_id, status="timed_out", error=job["error"])
+                else:
+                    job["status"] = "error"
+                    job["error"] = str(e)
+                    JOBS_DB.update(job_id, status="error", error=str(e))
             except Exception as e:
                 job["status"] = "error"
                 job["error"] = str(e)
+                JOBS_DB.update(job_id, status="error", error=str(e))
 
         with TRAIN_LOCK:
             TRAIN_JOBS[job_id] = job
@@ -1181,7 +1437,18 @@ def api_train_status(job_id: str):
         with TRAIN_LOCK:
             job = TRAIN_JOBS.get(job_id)
         if job is None:
-            return _error("Job not found.", status=404)
+            stored = JOBS_DB.get(job_id)
+            if stored is None:
+                return _error("Job not found.", status=404)
+            return jsonify({
+                "job_id": job_id,
+                "status": stored.get("status"),
+                "target": (stored.get("params") or {}).get("target_column"),
+                "progress": {},
+                "error": stored.get("error"),
+                "training": None,
+                "persisted": True,
+            })
         return jsonify({
             "job_id": job_id,
             "status": job["status"],
@@ -1203,6 +1470,8 @@ def api_train_cancel(job_id: str):
                 job["status"] = "cancelling"
         if job is None:
             return _error("Job not found.", status=404)
+        if job["status"] == "cancelling":
+            JOBS_DB.update(job_id, status="cancelling")
         return _success(status=job["status"], message="Cancellation requested. Stopping after the current model…")
     except Exception as e:
         return _error(str(e))
@@ -1218,6 +1487,8 @@ def api_op_start():
         params = data.get("params") or {}
         job = _start_op_job(op_name, params)
         return _success(job_id=job["id"], status=job["status"], operation=op_name)
+    except JobBusyError as e:
+        return _error(str(e), status=429)
     except Exception as e:
         return _error(str(e))
 
@@ -1227,8 +1498,19 @@ def api_op_status(job_id: str):
     try:
         with OP_LOCK:
             job = OP_JOBS.get(job_id)
+        # Survive a restart: fall back to the durable job store (A5).
         if job is None:
-            return _error("Operation job not found.", status=404)
+            stored = JOBS_DB.get(job_id)
+            if stored is None:
+                return _error("Operation job not found.", status=404)
+            return jsonify({
+                "job_id": job_id,
+                "operation": stored.get("operation"),
+                "status": stored.get("status"),
+                "error": stored.get("error"),
+                "result": stored.get("result"),
+                "persisted": True,
+            })
         return jsonify({
             "job_id": job_id,
             "operation": job["operation"],
@@ -1362,21 +1644,37 @@ def api_repredict():
 
 @app.route("/api/predict/table", methods=["POST"])
 def api_predict_table():
-    """Run the trained model on every row of a database table."""
+    """Run the trained model on rows of a database table, optionally paginated.
+
+    Supports ``limit`` + ``offset`` for large tables so a single request never
+    materializes the whole table + prediction set in memory at once.
+    """
     try:
         agent = _get_agent()
         data = request.get_json(silent=True) or {}
         table = data.get("table")
         limit = data.get("limit")
+        offset = data.get("offset") or 0
         if not table:
             return _error("table is required.")
 
-        df = agent.load_table(table, limit=limit)
+        try:
+            offset = max(0, int(offset))
+            if limit:
+                limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            return _error("limit/offset must be integers.")
+
+        total = agent.db.get_row_count(table)
+        df = agent.load_table(table, limit=limit, offset=offset)
         predictions = agent.predict(df)
         return _success(
             predictions=_jsonable(predictions),
             columns=list(predictions.columns),
             rows=len(predictions),
+            total=total,
+            offset=offset,
+            limit=limit,
             source=f"table:{table}",
         )
     except Exception as e:
@@ -1434,14 +1732,21 @@ def api_predict_upload():
 
 @app.route("/api/export/csv", methods=["GET"])
 def api_export_csv():
-    """Download the currently loaded dataset as CSV."""
+    """Stream the loaded dataset as a CSV download (chunked, low memory)."""
     try:
         agent = _get_agent()
         if agent.current_df is None:
             return _error("No data loaded. Load a table or query first.")
-        csv_str = agent.current_df.to_csv(index=False)
+        df = agent.current_df
+
+        def _generate() -> Any:
+            yield df.iloc[:0].to_csv(index=False)  # header row
+            chunk = 10_000
+            for start in range(0, len(df), chunk):
+                yield df.iloc[start:start + chunk].to_csv(index=False, header=False)
+
         return Response(
-            csv_str,
+            _generate(),
             mimetype="text/csv",
             headers={
                 "Content-Disposition": "attachment; filename=exported_data.csv"
@@ -1793,13 +2098,21 @@ def api_llm_explain_predictions():
 @app.before_request
 def _log_request_start() -> None:
     request._start_time = time.monotonic()
-    log.info("-> %s %s", request.method, request.path)
+    if not cfg.DISABLE_REQUEST_LOG:
+        log.info("-> %s %s", request.method, request.path)
 
 
 @app.after_request
 def _log_request_end(resp: Response) -> Response:
+    with METRICS_LOCK:
+        METRICS["requests"] += 1
+        if resp.status_code >= 400:
+            METRICS["errors"] += 1
+        key = f"{request.method} {request.path}"
+        METRICS["by_path"][key] = METRICS["by_path"].get(key, 0) + 1
     ms = (time.monotonic() - getattr(request, "_start_time", time.monotonic())) * 1000
-    log.info("<- %s %s %s (%.1f ms)", request.method, request.path, resp.status_code, ms)
+    if not cfg.DISABLE_REQUEST_LOG:
+        log.info("<- %s %s %s (%.1f ms)", request.method, request.path, resp.status_code, ms)
     return resp
 
 
@@ -1833,6 +2146,8 @@ def main() -> None:
         except Exception as e:
             log.error("Failed to connect to database: %s", e)
 
+    _install_signal_handlers()
+
     # Production default: serve via waitress (cross-platform, thread pool) so
     # the API can handle concurrent requests without the Flask dev server.
     if not args.debug:
@@ -1843,13 +2158,16 @@ def main() -> None:
                 "ML Agent Web API (waitress) at http://%s:%s with %d threads",
                 args.host, args.port, cfg.WSGI_THREADS,
             )
-            serve(
-                app,
-                host=args.host,
-                port=args.port,
-                threads=cfg.WSGI_THREADS,
-                channel_timeout=300,
-            )
+            try:
+                serve(
+                    app,
+                    host=args.host,
+                    port=args.port,
+                    threads=cfg.WSGI_THREADS,
+                    channel_timeout=300,
+                )
+            finally:
+                _shutdown()
             return
         except ImportError:
             log.warning(
@@ -1860,8 +2178,51 @@ def main() -> None:
             log.warning("waitress failed to start (%s); using Flask dev server", e)
 
     log.info("ML Agent Web API (dev server) at http://%s:%s", args.host, args.port)
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=cfg.WSGI_THREADS > 1)
+    try:
+        app.run(host=args.host, port=args.port, debug=args.debug, threaded=cfg.WSGI_THREADS > 1)
+    finally:
+        _shutdown()
 
 
-if __name__ == "__main__":
-    main()
+def _install_signal_handlers() -> None:
+    """On SIGTERM/SIGINT, refuse new work and let in-flight jobs drain (C2)."""
+    try:
+        import signal
+
+        def _on_stop(signum, frame):  # noqa: ANN001
+            global RUNNING
+            with SHUTDOWN_LOCK:
+                RUNNING = False
+            log.warning("Received %s; draining in-flight jobs and shutting down.", signum)
+
+        signal.signal(signal.SIGTERM, _on_stop)
+        signal.signal(signal.SIGINT, _on_stop)
+    except Exception:  # pragma: no cover - non-POSIX platforms
+        pass
+
+
+def _shutdown() -> None:
+    """Drain background work and release resources on exit."""
+    global RUNNING
+    with SHUTDOWN_LOCK:
+        RUNNING = False
+    # Give in-flight jobs a bounded window to finish (short ops), then close.
+    try:
+        JOB_EXECUTOR.shutdown(wait=True, cancel_futures=False)
+    except Exception:
+        pass
+    for session in list(SESSIONS.values()):
+        try:
+            session.close()
+        except Exception:
+            pass
+    if AGENT is not None:
+        try:
+            AGENT.close()
+        except Exception:
+            pass
+    try:
+        JOBS_DB.close()
+    except Exception:
+        pass
+    log.info("Shutdown complete.")

@@ -665,6 +665,41 @@ gunicorn -c gunicorn.conf.py wsgi:app
   the shared agent (model, `current_df`) mid-request, while reads stay lock-free.
 - **Request size caps + proxy support** and a WSGI entry point (`wsgi.py`).
 
+### Hardening tiers (heavy load / deep analysis)
+
+**Tier 1 — Reliability & compute**
+- Job IDs are now UUIDs (no more race/clobber) and background **op jobs run on a
+  bounded thread pool** with a hard concurrency cap (`MLAGENT_MAX_CONCURRENT_JOBS`) —
+  submissions beyond the cap get `429`.
+- **Training no longer holds the state lock for the whole fit**: the web layer
+  snapshots the data, runs the model search off-lock, and only the brief
+  snapshot/commit touch the lock (so `connect`/`load`/`predict` stay responsive).
+- **Native DB statement timeouts** (`MLAGENT_DB_STMT_TIMEOUT`, Postgres
+  `statement_timeout` / MySQL `max_execution_time`) replace thread-per-query.
+- Vectorized `_prepare_data` column scanning; **atomic JSON stores** (tmp+rename);
+  bounded LLM concurrency gate.
+
+**Tier 2 — Observability, auth, operations**
+- `/health` (liveness), `/health/ready` (readiness — 503 until connected) and
+  `/status` (request metrics, active jobs, sessions).
+- Graceful shutdown: SIGTERM/SIGINT refuse new work, drain in-flight jobs, close
+  sessions (orchestrators can rolling-deploy without orphaning clients).
+- Optional shared bearer token (`MLAGENT_API_TOKEN`) and per-IP rate limiting
+  (`MLAGENT_RATE_LIMIT_PER_MINUTE`, returns `429`).
+
+**Tier 3 — Scale**
+- **Durable job store** (`ml_agent/job_store.py`, SQLite via `MLAGENT_JOBS_DB_PATH`)
+  — jobs survive restarts; stale `running` jobs are marked `interrupted`; train/op
+  status endpoints fall back to the store.
+- **Persistent analysis cache** (`agent.enable_disk_cache`) keyed by data
+  fingerprint, so repeated deep analysis is near-free and shared across workers.
+- **Pagination & streaming**: `/api/predict/table` supports `limit`+`offset`;
+  `/api/export/csv` streams in chunks instead of building one giant string.
+- **Session isolation** (C3): send an `X-Session-Id` header (or body `session_id`)
+  to `/api/connect` to get an isolated agent per session. The default (no header)
+  session is fully backward compatible, so existing clients and the dashboard work
+  unchanged while advanced clients can scale sessions independently.
+
 ## Project Structure
 
 ```

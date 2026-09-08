@@ -12,6 +12,7 @@ times out, a heuristic fallback result is returned instead of crashing.
 import json
 import re
 import socket
+import threading
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,6 +22,11 @@ import pandas as pd
 # Default LM Studio local server
 DEFAULT_BASE_URL = "http://localhost:1234/v1"
 DEFAULT_TIMEOUT = 60
+
+# Bound concurrent LLM HTTP requests. LLM calls are slow (seconds); letting an
+# unbounded number run under load would saturate the local server and exhaust
+# web worker threads. This gate serializes them beyond a small concurrency.
+_LLM_GATE = threading.BoundedSemaphore(2)
 
 
 class LLMAdvisorError(Exception):
@@ -113,8 +119,9 @@ class LLMAdvisor:
         else:
             req = urllib.request.Request(url, method="GET")
 
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
+        with _LLM_GATE:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
 
     def _chat(
         self,
