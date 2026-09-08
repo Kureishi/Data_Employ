@@ -700,6 +700,42 @@ gunicorn -c gunicorn.conf.py wsgi:app
   session is fully backward compatible, so existing clients and the dashboard work
   unchanged while advanced clients can scale sessions independently.
 
+### Follow-ups (hard-kill jobs, Redis, persistent sessions, repo hygiene)
+
+**1. Hard-killable background jobs (`MLAGENT_PROCESS_JOBS=1`)**
+- Off by default; when enabled (together with `MLAGENT_JOBS_DB_PATH`), **training and
+  op jobs run in a child process** (`ml_agent/workexec.py`) instead of a daemon thread,
+  so a genuinely stuck scikit-learn fit can be `terminate()`/`kill()`ed instead of
+  hanging a worker forever.
+- Parent/child communicate through the durable job store: the child re-connects to
+  the DB, re-hydrates the working dataset from a data spec, and writes status/result
+  back; the parent polls, honours `/api/train/cancel` (hard-kills on cancel), and
+  enforces a hard wall-clock ceiling. Jobs past the ceiling are terminated and marked
+  `timed_out`.
+- **The trained model is not lost**: the child writes the model file to the same
+  `models_dir` and emits `model_path`; on completion the parent calls
+  `agent.load_model(model_path)` so `predict` works immediately.
+- Notes: with `multiprocessing`'s `spawn` start method, whatever module is launched
+  must guard its entry point behind `if __name__ == "__main__":` (the shipped
+  `web_api.py`/`main.py` already do). Windows only supports `spawn`.
+
+**2. Redis-backed shared rate limiting (`MLAGENT_REDIS_URL`)**
+- `ml_agent/ratelimit.py` uses a Redis sorted-set for a shared fixed-window counter
+  that is correct across multiple gunicorn workers / nodes. If Redis is unset,
+  unreachable, or the package is missing, it transparently falls back to the
+  in-process limiter (single-process correct). Install with `pip install redis`.
+
+**3. Persistent session registry (`ml_agent/session_store.py`)**
+- Named sessions are now written to a shared registry (Redis → local SQLite via
+  `MLAGENT_SESSIONS_DB_PATH` → memory) remembering the DB connection. After a worker
+  restart / recycling, `_get_agent` transparently re-hydrates the session by
+  re-connecting, so a client's `X-Session-Id` keeps working on any worker that has
+  the registry. TTL controlled by `MLAGENT_SESSION_TTL`.
+
+**4. Repo hygiene**
+- Add these to `.gitignore` (already present): `__pycache__/`, `.venv/`, runtime
+  `.db` / `.log` / model / cache artifacts, `~/.mlagent/`.
+
 ## Project Structure
 
 ```
@@ -714,6 +750,11 @@ gunicorn -c gunicorn.conf.py wsgi:app
 │   ├── analyzer.py          # Data analysis module
 │   ├── preprocessor.py      # Data preprocessing module
 │   ├── llm_advisor.py       # Local LLM advisor (LM Studio)
+│   ├── job_store.py         # Durable SQLite job registry (A5)
+│   ├── ratelimit.py         # Redis-backed (fallback local) rate limiter
+│   ├── session_store.py     # Persistent/shared session registry
+│   ├── ops.py               # Op handlers (thread + subprocess reuse)
+│   ├── workexec.py          # Child-process entrypoints (hard-killable jobs)
 │   └── cli.py               # Command-line interface
 ├── web/
 │   └── static/

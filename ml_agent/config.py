@@ -171,6 +171,39 @@ API_TOKEN = _get_str("MLAGENT_API_TOKEN", "").strip() or None
 DISABLE_REQUEST_LOG = _get_bool("MLAGENT_DISABLE_REQUEST_LOG", False)
 
 
+def get_redis_url() -> Optional[str]:
+    """Optional Redis URL for shared rate limiting / session registry.
+
+    When unset (or redis is not installed) the system gracefully falls back to
+    an in-process / local-SQLite backend, which is correct for single-process
+    deployments but not shared across multiple worker processes.
+    """
+    url = _get_str("MLAGENT_REDIS_URL", "").strip()
+    return url or None
+
+
+# ============ Distributed / shared-state options (follow-ups) ============
+
+
+def get_sessions_db_path() -> Optional[str]:
+    """Local SQLite path for the persistent session registry (fallback used
+    when Redis is unavailable). Empty disables the on-disk session registry."""
+    p = _get_str("MLAGENT_SESSIONS_DB_PATH", "").strip()
+    if p:
+        return p
+    return os.path.join(_default_data_dir(), "sessions.db")
+
+
+# Session idle TTL (seconds) after which a persisted session entry expires.
+SESSION_TTL = _get_int("MLAGENT_SESSION_TTL", 7 * 24 * 3600)
+
+# Run heavy background jobs (train, and table-scoped op jobs) in a child process
+# so a genuinely stuck scikit-learn fit can be hard-killed (terminate/kill)
+# instead of hanging a daemon thread forever. Requires an enabled job store
+# (MLAGENT_JOBS_DB_PATH) for parent<->child status communication.
+PROCESS_JOBS = _get_bool("MLAGENT_PROCESS_JOBS", False)
+
+
 # ============ WSGI / deployment ============
 
 WSGI_THREADS = _get_int("MLAGENT_WSGI_THREADS", 8)

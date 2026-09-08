@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status     TEXT NOT NULL,
     params     TEXT,
     result     TEXT,
+    progress   TEXT,
     error      TEXT,
     created_at REAL,
     updated_at REAL
@@ -32,7 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 
 _ROW_COLUMNS = ("id", "kind", "operation", "status", "params", "result",
-                "error", "created_at", "updated_at")
+                "progress", "error", "created_at", "updated_at")
 
 
 def _js(x: Any) -> Optional[str]:
@@ -54,6 +55,13 @@ class JobStore:
             with self._lock:
                 self._conn.execute(_SCHEMA)
                 self._conn.commit()
+                # Migrate older DBs that predate the `progress` column.
+                cols = [r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")]
+                if cols and "progress" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE jobs ADD COLUMN progress TEXT"
+                    )
+                    self._conn.commit()
 
     @property
     def enabled(self) -> bool:
@@ -83,7 +91,15 @@ class JobStore:
         cols = ", ".join(f"{k}=?" for k in fields)
         values: List[Any] = []
         for k in fields:
-            values.append(_js(fields[k]) if k in ("params", "result") else fields[k])
+            v = fields[k]
+            # JSON-serialize anything that isn't a scalar so sqlite can bind it;
+            # keep the schema column ("params"/"result"/"progress"...) intact.
+            if k in ("params", "result", "progress"):
+                values.append(_js(v))
+            elif not isinstance(v, (str, int, float, bool)) and v is not None:
+                values.append(_js(v))
+            else:
+                values.append(v)
         values.append(job_id)
         with self._lock:
             self._conn.execute(
@@ -138,7 +154,7 @@ class JobStore:
     @staticmethod
     def _row_to_dict(row: Any) -> Dict[str, Any]:
         d = dict(zip(_ROW_COLUMNS, row))
-        for k in ("params", "result"):
+        for k in ("params", "result", "progress"):
             try:
                 d[k] = json.loads(d[k]) if d[k] else None
             except Exception:

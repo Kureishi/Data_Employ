@@ -56,6 +56,8 @@ class MLAgent:
 
         self.current_table: Optional[str] = None
         self.current_df: Optional[pd.DataFrame] = None
+        self.current_query: Optional[str] = None
+        self._load_limit: Optional[int] = None
         self.model_selector: Optional[ModelSelector] = None
         self.predictor: Optional[Predictor] = None
         self.analyzer: Optional[DataAnalyzer] = None
@@ -101,6 +103,7 @@ class MLAgent:
                    offset: Optional[int] = None) -> pd.DataFrame:
         """Load a table (optionally paginated with limit/offset) into memory."""
         self.current_table = table_name
+        self._load_limit = limit or offset
         self.current_df = self.db.load_table(table_name, limit, offset)
         self._invalidate_analysis_cache()
         return self.current_df
@@ -112,7 +115,9 @@ class MLAgent:
     def load_query_as_data(self, query: str) -> pd.DataFrame:
         """Load query results as the current working dataset."""
         self.current_df = self.db.execute_query(query)
+        self.current_query = query
         self.current_table = f"query: {query[:50]}..."
+        self._load_limit = None
         self._invalidate_analysis_cache()
         return self.current_df
 

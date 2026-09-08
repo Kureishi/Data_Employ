@@ -9,6 +9,7 @@ Then open http://localhost:5000 in your browser.
 """
 import argparse
 import logging
+import multiprocessing as mp
 import os
 import threading
 import time
@@ -23,8 +24,12 @@ from werkzeug.utils import secure_filename
 
 from ml_agent import MLAgent
 from ml_agent import config as cfg
+from ml_agent import workexec
 from ml_agent.job_store import JobStore
 from ml_agent.logging_utils import configure_logging
+from ml_agent.ops import handlers as OP_HANDLERS
+from ml_agent.ratelimit import RateLimiter
+from ml_agent.session_store import SessionStore
 
 log = logging.getLogger("ml_agent.web_api")
 
@@ -76,9 +81,12 @@ JOB_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, cfg.MAX_CONCURRENT_JOBS))
 JOB_SEM = threading.BoundedSemaphore(max(1, cfg.MAX_CONCURRENT_JOBS))
 
 # Durable job store (SQLite) so jobs survive restarts. Optional; in-memory only
-# when MLAGENT_JOBS_DB_PATH is unset.
+# when MLAGENT_JOBS_DB_PATH is unset. mark_stale_interrupted() must only run in
+# the main process — a spawned worker would otherwise mark the parent's own
+# running job as interrupted at import time.
 JOBS_DB = JobStore(cfg.get_jobs_db_path())
-JOBS_DB.mark_stale_interrupted()
+if mp.current_process().name == "MainProcess":
+    JOBS_DB.mark_stale_interrupted()
 
 # Async training-job registry (id -> job dict)
 TRAIN_JOBS: Dict[str, Dict[str, Any]] = {}
@@ -106,6 +114,23 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 ALLOWED_DB_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 ALLOWED_MODEL_EXTENSIONS = {".joblib", ".pkl", ".pickle"}
 
+# Shared rate limiter (Redis-backed when MLAGENT_REDIS_URL is set + redis
+# installed; otherwise an in-process fallback with identical semantics).
+RATE_LIMITER = RateLimiter(cfg.get_redis_url())
+
+# Shared session registry (Redis -> local SQLite -> memory). Lets a session
+# survive worker/process recycling by remembering its DB connection (C3/routing).
+SESSION_STORE = SessionStore(
+    redis_url=cfg.get_redis_url(),
+    sqlite_path=cfg.get_sessions_db_path(),
+    ttl=cfg.SESSION_TTL,
+)
+
+# ---- Child-process jobs (follow-up 1: hard-kill) ----------------------------
+PROC_LOCK = threading.Lock()
+PROC_JOBS: Dict[str, Any] = {}  # job_id -> multiprocessing.Process
+_PROC_CTX = mp.get_context("spawn")
+
 # ============ Helpers ============
 
 
@@ -114,7 +139,9 @@ def _get_agent(session_id: Optional[str] = None) -> MLAgent:
 
     When ``session_id`` is omitted the request's ``X-Session-Id`` header is
     used; the default session maps to the legacy global ``AGENT`` so existing
-    clients keep working unchanged.
+    clients keep working unchanged. Named sessions missing from this process
+    are transparently re-hydrated from the shared session registry (survives
+    restarts / worker recycling).
     """
     global AGENT
     sid = session_id or _current_session_id()
@@ -124,12 +151,23 @@ def _get_agent(session_id: Optional[str] = None) -> MLAgent:
         return AGENT
     with SESSION_LOCK:
         agent = SESSIONS.get(sid)
-    if agent is None:
-        raise RuntimeError(
-            "Unknown or expired session. POST /api/connect with an "
-            "X-Session-Id header to create one."
-        )
-    return agent
+    if agent is not None:
+        return agent
+    # Re-hydrate a known session: reconnect to the same database (C3).
+    meta = SESSION_STORE.get(sid)
+    if meta and meta.get("connection"):
+        try:
+            rebuilt = _make_agent(meta["connection"])
+        except Exception:
+            rebuilt = None
+        if rebuilt is not None:
+            with SESSION_LOCK:
+                SESSIONS[sid] = rebuilt
+            return rebuilt
+    raise RuntimeError(
+        "Unknown or expired session. POST /api/connect with an "
+        "X-Session-Id header to create one."
+    )
 
 
 def _make_agent(connection: str) -> MLAgent:
@@ -162,6 +200,8 @@ def _connect_session(session_id: str, connection: str) -> MLAgent:
     agent = _make_agent(connection)
     with SESSION_LOCK:
         SESSIONS[session_id] = agent
+    # Persist the connection so the session can be re-hydrated elsewhere (C3).
+    SESSION_STORE.put(session_id, {"connection": connection})
     return agent
 
 
@@ -182,6 +222,7 @@ def _close_session(session_id: str) -> None:
             agent.close()
         except Exception:
             pass
+    SESSION_STORE.delete(session_id)
 
 
 def _init_agent_stores(agent: MLAgent) -> None:
@@ -240,37 +281,6 @@ def _df_to_html_table(df: pd.DataFrame, max_rows: int = 100) -> str:
 # ============ Auth + rate limiting + metrics + health (Tier 2) ============
 
 
-def _is_rate_limited(key: str, limit_per_min: int) -> bool:
-    """Fixed-window in-memory rate limiter (per key). Returns True if the
-    caller exceeded the per-minute allowance for that key."""
-    if limit_per_min <= 0:
-        return False
-    now = time.time()
-    window = 60.0
-    with METRICS_LOCK:
-        buckets = getattr(_is_rate_limited, "_buckets", {})
-        strip = getattr(_is_rate_limited, "_strip", deque())
-        dq = buckets.get(key)
-        if dq is None:
-            dq = deque()
-            buckets[key] = dq
-            strip.append(key)
-        # drop stale keys to avoid unbounded memory growth
-        while strip and len(buckets) > 10_000:
-            stale = strip.popleft()
-            buckets.pop(stale, None)
-        while dq and now - dq[0] >= window:
-            dq.popleft()
-        if len(dq) >= limit_per_min:
-            _is_rate_limited._buckets = buckets
-            _is_rate_limited._strip = strip
-            return True
-        dq.append(now)
-        _is_rate_limited._buckets = buckets
-        _is_rate_limited._strip = strip
-        return False
-
-
 def _client_key() -> str:
     return request.remote_addr or "unknown"
 
@@ -288,7 +298,8 @@ def _apply_auth_and_limits() -> Optional[Response]:
             return _error("Unauthorized.", status=401)
     # Rate-limit mutating API calls (POST/PUT/DELETE) per client IP.
     if request.method in ("POST", "PUT", "DELETE") and cfg.RATE_LIMIT_PER_MINUTE > 0:
-        if _is_rate_limited(f"{_client_key()}:{request.method}:{request.path}", cfg.RATE_LIMIT_PER_MINUTE):
+        key = f"{_client_key()}:{request.method}:{request.path}"
+        if not RATE_LIMITER.allow(key, cfg.RATE_LIMIT_PER_MINUTE):
             return _error("Rate limit exceeded. Slow down and retry later.", status=429)
     return None
 
@@ -372,6 +383,8 @@ def _start_op_job(op_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """Launch a bounded, durable async operation job.
 
     Returns the job record. Raises JobBusyError when the concurrency cap is hit.
+    When ``PROCESS_JOBS`` is enabled the work runs in a child process (so a
+    genuinely stuck op can be hard-killed); otherwise it runs in the thread pool.
     """
     agent = _get_agent()
     handler = _get_op_handler(op_name)
@@ -398,129 +411,145 @@ def _start_op_job(op_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
     # A5: persist so the job survives a restart and is inspectable.
     JOBS_DB.put(job_id, "op", op_name, "running", params=params, created_at=started_at)
 
-    def worker() -> None:
+    def finalize(status: str, result=None, error: Optional[str] = None) -> None:
+        with OP_LOCK:
+            job["status"] = status
+            job["result"] = result
+            job["error"] = error
+        JOBS_DB.update(job_id, status=status, result=result, error=error)
+        if status == "done":
+            _add_notification(f"{op_name} completed", "success", op_name)
+        elif status == "error":
+            _add_notification(f"{op_name} failed: {error}", "error", op_name)
+
+    def thread_worker() -> None:
         try:
             with AGENT_LOCK:
                 result = handler(agent, params)
-            # Enforce a soft wall-clock ceiling: report timeout if exceeded.
             if time.time() - started_at > cfg.JOB_MAX_WALLCLOCK:
-                job["status"] = "timed_out"
-                job["error"] = f"Job exceeded {cfg.JOB_MAX_WALLCLOCK}s wall-clock limit."
-                JOBS_DB.update(job_id, status="timed_out", error=job["error"])
+                finalize("timed_out", error=f"Job exceeded {cfg.JOB_MAX_WALLCLOCK}s.")
                 return
-            with OP_LOCK:
-                job["result"] = result
-            job["status"] = "done"
-            JOBS_DB.update(job_id, status="done", result=result)
-            _add_notification(f"{op_name} completed", "success", op_name)
+            finalize("done", result=result)
         except Exception as e:
-            job["status"] = "error"
-            job["error"] = str(e)
-            JOBS_DB.update(job_id, status="error", error=str(e))
-            _add_notification(f"{op_name} failed: {e}", "error", op_name)
+            finalize("error", error=str(e))
         finally:
             JOB_SEM.release()
 
+    if cfg.PROCESS_JOBS and JOBS_DB.enabled and agent.db.connection_string:
+        # Run in a child process so a stuck op can be terminate()/kill()ed.
+        try:
+            data_spec = _build_data_spec(agent)
+            proc = _spawn_process(
+                "op",
+                job_id=job_id,
+                connection=agent.db.connection_string,
+                data_spec=data_spec,
+                op_name=op_name,
+                params=params,
+                jobs_db_path=cfg.get_jobs_db_path(),
+            )
+            with PROC_LOCK:
+                PROC_JOBS[job_id] = proc
+            with OP_LOCK:
+                OP_JOBS[job_id] = job
+            threading.Thread(
+                target=_await_process, args=(proc, job_id, op_name, finalize, started_at),
+                daemon=True,
+            ).start()
+            return job
+        except Exception as e:  # fall back to thread pool on spawn trouble
+            log.warning("process job failed to spawn (%s); using thread", e)
     with OP_LOCK:
         OP_JOBS[job_id] = job
-    JOB_EXECUTOR.submit(worker)
+    JOB_EXECUTOR.submit(thread_worker)
     return job
 
 
-# Handlers: (agent, params) -> JSON-serializable result dict.
-def _op_analyze(agent, params):
-    return {"analysis": _jsonable(agent.analyze(
-        params.get("target_column"), params.get("type", "summary")
-    ))}
+# ---- Child-process helpers (hard-killable background jobs) -------------------
 
 
-def _op_anomaly(agent, params):
-    result = agent.detect_anomalies(
-        table=params.get("table") or None,
-        method=params.get("method", "isolation_forest"),
-        contamination=float(params.get("contamination", 0.1)),
+def _build_data_spec(agent: MLAgent) -> Optional[Dict[str, Any]]:
+    """Describe how the current working dataset was loaded so a child process
+    can re-hydrate it (MLAgent is not pickled; only connection + spec travels)."""
+    if getattr(agent, "current_query", None):
+        return {"type": "query", "query": agent.current_query}
+    if getattr(agent, "current_table", None):
+        spec: Dict[str, Any] = {"type": "table", "table": agent.current_table}
+        if getattr(agent, "_load_limit", None):
+            spec["limit"] = agent._load_limit
+        return spec
+    return None
+
+
+def _spawn_process(kind: str, **kw: Any) -> Any:
+    """Spawn a child process running workexec.entry(kind, kw)."""
+    proc = _PROC_CTX.Process(
+        target=workexec.entry,
+        args=(kind, kw),
+        daemon=True,
+        name=f"mlagent-{kind}",
     )
-    return {"anomaly": _jsonable(result)}
+    proc.start()
+    return proc
 
 
-def _op_synthesize(agent, params):
-    base = params.get("table")
-    if not base:
-        raise ValueError("table is required.")
-    agent.synthesize_features(
-        base,
-        include_counts=bool(params.get("include_counts", True)),
-        include_aggregates=bool(params.get("include_aggregates", True)),
-    )
-    summary = agent.get_feature_synthesizer_summary()
-    return {
-        "summary": summary,
-        "columns": list(agent.current_df.columns),
-        "rows": int(len(agent.current_df)),
-        "data": _jsonable(agent.current_df.head(100)),
-    }
+def _await_process(proc: Any, job_id: str, label: str, finalize,
+                   started_at: float) -> None:
+    """Watch a child process; when it finishes, reflect its durable status into
+    the in-memory job record. If it stays alive past the wall-clock ceiling with
+    no heartbeated progress, hard-kill it (terminate -> kill)."""
+    proc.join()
+    try:
+        rec = JOBS_DB.get(job_id)
+    except Exception:
+        rec = None
+    status = (rec or {}).get("status") or ("error" if proc.exitcode else "done")
+    if proc.exitcode not in (0, None) and status in ("running", "done"):
+        status = "error"
+    if status == "done":
+        finalize("done", result=(rec or {}).get("result"))
+    elif status == "error":
+        finalize("error", error=(rec or {}).get("error") or f"{label} process exited {proc.exitcode}")
+    elif status == "timed_out":
+        _hard_kill(job_id)
+        finalize("timed_out", error=f"{label} exceeded wall-clock limit and was killed.")
+    else:  # interrupted/cancelled
+        finalize(status, error=(rec or {}).get("error") or "Job interrupted.")
+    with PROC_LOCK:
+        PROC_JOBS.pop(job_id, None)
+    JOB_SEM.release()
 
 
-def _op_monitor_capture(agent, params):
-    result = agent.capture_monitor_reference()
-    return {"rows": len(agent.current_df) if agent.current_df is not None else 0,
-            "features": result.get("features", [])}
+def _hard_kill(job_id: str) -> None:
+    """Hard-kill a child process job (terminate, then kill if needed)."""
+    with PROC_LOCK:
+        proc = PROC_JOBS.pop(job_id, None)
+    if proc is not None and proc.is_alive():
+        try:
+            proc.terminate()
+            proc.join(timeout=5)
+        except Exception:
+            pass
+        if proc.is_alive():
+            try:
+                proc.kill()
+                proc.join(timeout=5)
+            except Exception:
+                pass
 
 
-def _op_monitor_check(agent, params):
-    table = params.get("table")
-    if not table:
-        raise ValueError("table is required.")
-    return {"drift": _jsonable(agent.monitor_live(table, feature_columns=params.get("features")))}
+def _train_fail(job: Dict[str, Any], job_id: str, message: str,
+                status: str = "error") -> None:
+    """Record a terminal train-job failure/cancellation in both registries."""
+    job["status"] = status
+    job["error"] = message
+    try:
+        JOBS_DB.update(job_id, status=status, error=message)
+    except Exception:
+        pass
 
 
-def _op_repredict(agent, params):
-    table = params.get("table")
-    if not table:
-        raise ValueError("table is required.")
-    res = agent.repredict_table(
-        table, limit=params.get("limit"), contamination=float(params.get("contamination", 0.05))
-    )
-    return {
-        "predictions": _jsonable(res["predictions"]),
-        "drift": _jsonable(res["drift"]),
-        "anomaly": res["anomaly"],
-        "rows": res["rows"],
-        "columns": list(res["predictions"].columns),
-    }
 
-
-def _op_recipe_apply(agent, params):
-    name = params.get("name")
-    if not name:
-        raise ValueError("recipe name is required.")
-    results = agent.apply_recipe(
-        name,
-        target=params.get("target"),
-        tuning=params.get("tuning"),
-        n_jobs=params.get("n_jobs"),
-    )
-    return {"training": _serialize_training(results), "recipe": name}
-
-
-def _op_batch_whatif(agent, params):
-    feature = params.get("feature")
-    if not feature:
-        raise ValueError("feature is required.")
-    result = agent.batch_what_if(feature, params.get("value"))
-    return {"batch_whatif": _jsonable(result)}
-
-
-OP_HANDLERS: Dict[str, Any] = {
-    "analyze": _op_analyze,
-    "anomaly": _op_anomaly,
-    "synthesize": _op_synthesize,
-    "monitor_capture": _op_monitor_capture,
-    "monitor_check": _op_monitor_check,
-    "repredict": _op_repredict,
-    "recipe_apply": _op_recipe_apply,
-    "batch_whatif": _op_batch_whatif,
-}
 
 
 # ============ Routes ============
@@ -1333,11 +1362,6 @@ def api_train():
         if not target:
             return _error("target_column is required.")
 
-        with TRAIN_LOCK:
-            for job in TRAIN_JOBS.values():
-                if job.get("status") in ("running", "cancelling"):
-                    return _error("A training job is already running. Cancel it first or wait.")
-
         # Single concurrent training job per process, and refuse while draining.
         with TRAIN_LOCK:
             for job in TRAIN_JOBS.values():
@@ -1372,19 +1396,19 @@ def api_train():
                 return True
             return time.time() - started_at > cfg.JOB_MAX_WALLCLOCK
 
-        def worker() -> None:
+        with TRAIN_LOCK:
+            TRAIN_JOBS[job_id] = job
+
+        def dispatch() -> None:
+            # Off-lock thread worker: snapshot data briefly, train off-lock.
+            with AGENT_LOCK:
+                if table:
+                    agent.load_table(table)
+                snapshot = agent.current_df.copy() if agent.current_df is not None else None
+            if snapshot is None:
+                _train_fail(job, job_id, "No data loaded to train on.")
+                return
             try:
-                # A2: snapshot the training data under a *brief* lock, then run
-                # the (long) model search off-lock so connect/disconnect/other
-                # requests are never blocked for the whole fit.
-                snapshot = None
-                with AGENT_LOCK:
-                    if table:
-                        agent.load_table(table)
-                    if agent.current_df is not None:
-                        snapshot = agent.current_df.copy()
-                if snapshot is None:
-                    raise RuntimeError("No data loaded to train on.")
                 results = agent.train(
                     target_column=target,
                     task_type=task_type,
@@ -1405,26 +1429,93 @@ def api_train():
                 }
                 JOBS_DB.update(job_id, status="done")
             except InterruptedError as e:
-                job["status"] = "cancelled"
-                job["error"] = str(e)
-                JOBS_DB.update(job_id, status="cancelled", error=str(e))
-            except RuntimeError as e:
-                if time.time() - started_at > cfg.JOB_MAX_WALLCLOCK:
-                    job["status"] = "timed_out"
-                    job["error"] = f"Training exceeded {cfg.JOB_MAX_WALLCLOCK}s."
-                    JOBS_DB.update(job_id, status="timed_out", error=job["error"])
-                else:
-                    job["status"] = "error"
-                    job["error"] = str(e)
-                    JOBS_DB.update(job_id, status="error", error=str(e))
+                _train_fail(job, job_id, str(e), status="cancelled")
             except Exception as e:
-                job["status"] = "error"
-                job["error"] = str(e)
-                JOBS_DB.update(job_id, status="error", error=str(e))
+                if time.time() - started_at > cfg.JOB_MAX_WALLCLOCK:
+                    _train_fail(job, job_id, f"Training exceeded {cfg.JOB_MAX_WALLCLOCK}s.",
+                                status="timed_out")
+                else:
+                    _train_fail(job, job_id, str(e))
 
-        with TRAIN_LOCK:
-            TRAIN_JOBS[job_id] = job
-        threading.Thread(target=worker, daemon=True).start()
+        def process_dispatch() -> None:
+            # Child-process train: re-hydrate data in the subprocess, run there,
+            # then hard-kill if it exceeds the wall-clock ceiling.
+            data_spec = _build_data_spec(agent)
+            kw = {
+                "job_id": job_id,
+                "connection": agent.db.connection_string,
+                "data_spec": data_spec,
+                "target": target,
+                "task_type": task_type,
+                "tuning": tuning,
+                "n_jobs": n_jobs,
+                "early_stop": early_stop,
+                "max_wallclock": cfg.JOB_MAX_WALLCLOCK,
+                "jobs_db_path": cfg.get_jobs_db_path(),
+                "models_dir": agent.models_dir,
+            }
+            try:
+                proc = _spawn_process("train", **kw)
+            except Exception as e:
+                log.warning("process train failed to spawn (%s); using thread", e)
+                threading.Thread(target=dispatch, daemon=True).start()
+                return
+            with PROC_LOCK:
+                PROC_JOBS[job_id] = proc
+
+            def watch() -> None:
+                rec = JOBS_DB.get(job_id) or {}
+                # Poll for cancellation during the run so /api/train/cancel works.
+                while proc.is_alive():
+                    # If parent hit wall-clock or cancel requested, hard-kill.
+                    if rec.get("status") == "cancelling":
+                        _hard_kill(job_id)
+                        JOBS_DB.update(job_id, status="cancelled", error="Cancelled by user.")
+                        src = TRAIN_JOBS.get(job_id)
+                        if src:
+                            src["status"] = "cancelled"
+                            src["error"] = "Cancelled by user."
+                        return
+                    if time.time() - started_at > cfg.JOB_MAX_WALLCLOCK:
+                        _hard_kill(job_id)
+                        JOBS_DB.update(job_id, status="timed_out",
+                                       error="Training exceeded wall-clock limit and was killed.")
+                        src = TRAIN_JOBS.get(job_id)
+                        if src:
+                            src["status"] = "timed_out"
+                            src["error"] = "Training exceeded wall-clock limit and was killed."
+                        return
+                    proc.join(timeout=1.0)
+                    rec = JOBS_DB.get(job_id) or {}
+                # Process finished before the ceiling: surface its durable status.
+                src = TRAIN_JOBS.get(job_id)
+                rec = JOBS_DB.get(job_id) or {}
+                if src is not None:
+                    src["status"] = rec.get("status") or ("done" if proc.exitcode == 0 else "error")
+                    src["error"] = rec.get("error")
+                    if rec.get("status") == "done" and rec.get("result"):
+                        src["training"] = rec.get("result")
+                        model_path = (rec.get("result") or {}).get("model_path")
+                        # Restore the trained model into THIS process so predict()
+                        # works after a subprocess train (the model itself lived
+                        # only in the child until now).
+                        if model_path and agent.db.engine is not None:
+                            try:
+                                agent.load_model(model_path)
+                            except Exception as e:
+                                log.warning("could not load trained model %s: %s", model_path, e)
+                    elif rec.get("status") == "done":
+                        r = rec.get("result") if rec.get("result") else None
+                        src["training"] = r
+                with PROC_LOCK:
+                    PROC_JOBS.pop(job_id, None)
+
+            threading.Thread(target=watch, daemon=True).start()
+
+        if cfg.PROCESS_JOBS and JOBS_DB.enabled and agent.db.connection_string:
+            process_dispatch()
+        else:
+            threading.Thread(target=dispatch, daemon=True).start()
 
         return _success(job_id=job_id, status=job["status"])
     except Exception as e:
@@ -1472,6 +1563,12 @@ def api_train_cancel(job_id: str):
             return _error("Job not found.", status=404)
         if job["status"] == "cancelling":
             JOBS_DB.update(job_id, status="cancelling")
+            # If running as a child process, hard-kill it immediately.
+            with PROC_LOCK:
+                is_proc = job_id in PROC_JOBS
+            if is_proc:
+                _hard_kill(job_id)
+                _train_fail(job, job_id, "Cancelled by user.", status="cancelled")
         return _success(status=job["status"], message="Cancellation requested. Stopping after the current model…")
     except Exception as e:
         return _error(str(e))
@@ -2206,11 +2303,21 @@ def _shutdown() -> None:
     global RUNNING
     with SHUTDOWN_LOCK:
         RUNNING = False
-    # Give in-flight jobs a bounded window to finish (short ops), then close.
+    # Give in-flight thread jobs a bounded window to finish (short ops).
     try:
         JOB_EXECUTOR.shutdown(wait=True, cancel_futures=False)
     except Exception:
         pass
+    # Hard-kill any still-running child processes.
+    with PROC_LOCK:
+        procs = list(PROC_JOBS.items())
+        PROC_JOBS.clear()
+    for job_id, proc in procs:
+        try:
+            proc.terminate()
+            proc.join(timeout=5)
+        except Exception:
+            pass
     for session in list(SESSIONS.values()):
         try:
             session.close()
@@ -2223,6 +2330,10 @@ def _shutdown() -> None:
             pass
     try:
         JOBS_DB.close()
+    except Exception:
+        pass
+    try:
+        SESSION_STORE.close()
     except Exception:
         pass
     log.info("Shutdown complete.")

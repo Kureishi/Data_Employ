@@ -18,12 +18,18 @@ from .model_monitor import ModelMonitor
 from .recipes import RecipeStore
 from .snapshots import SnapshotStore
 from .cli import build_parser, run_cli, main
+from .job_store import JobStore
+from .ratelimit import RateLimiter
+from .session_store import SessionStore
+from .ops import handlers as op_handlers
+from . import workexec  # subprocess entrypoints for background jobs
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __all__ = [
     "MLAgent", "DatabaseProcessor", "ModelSelector", "Predictor", "DataAnalyzer",
     "DataPreprocessor", "LLMAdvisor", "LLMAdvisorError", "create_llm_advisor",
     "RelationalFeatureSynthesizer", "ExperimentTracker", "SQLValidator",
     "AnomalyDetector", "ModelMonitor", "RecipeStore", "SnapshotStore",
-    "build_parser", "run_cli", "main",
+    "build_parser", "run_cli", "main", "JobStore", "RateLimiter", "SessionStore",
+    "op_handlers", "workexec",
 ]

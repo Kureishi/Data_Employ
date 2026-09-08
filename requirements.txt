@@ -9,3 +9,7 @@ flask>=3.0
 # as the default server and referenced by wsgi.py. Optional on Linux where
 # gunicorn is preferred instead.
 waitress>=3.0
+# Optional: shared Redis for rate limiting + session registry across multiple
+# worker processes / nodes (MLAGENT_REDIS_URL). Without it, the API transparently
+# falls back to per-process (in-memory / local-SQLite) backends.
+# redis>=5.0
