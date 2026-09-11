@@ -1,776 +1,179 @@
-# ML Agent - SQL Database Machine Learning Agent
+# ML Agent — SQL Database Machine Learning Agent
 
-An intelligent agent that processes SQL databases, automatically determines the best machine learning model for the data, and produces predictions and analysis per user requests.
+Automates end-to-end ML on SQL databases: discovers tables & relationships, auto-selects the best model via cross-validation, and produces predictions & analysis through a **CLI**, **Python API**, and **web dashboard**.
 
 ## Features
+- **SQL**: multi-table schema discovery, semantic column typing, saved queries, auto-join builder, DB-native sampling, read-only safety + query timeouts, ER diagram.
+- **Modeling**: auto task detection; selects from **9 regression / 7 classification** models by cross-validation with early-stop; optional hyperparameter tuning (`Quick`/`Full`); feature importance & engineering.
+- **Explainability**: per-record feature contributions, what-if & batch what-if, confusion matrix / classification report, model-drift (PSI) & anomaly detection.
+- **Workflow**: versioned experiments + champion/rollback, reusable pipeline recipes, result snapshots & diff, re-predict production tables, analysis/target caching, async jobs + toasts.
+- **Web UI**: `⌘K` command palette, zero-dependency SVG charts (correlations, distributions, importance, confusion matrix), HTML/Markdown/PNG report export, drift/anomaly/leaderboard dashboards, Quick View, persistent dashboard state, table sparkline previews.
+- **Production**: waitress/gunicorn serving, health/status endpoints, auth + rate limiting, durable job store, Redis-backed rate limiting & sessions, hard-killable jobs, session isolation.
 
-- **SQL Database Processing**: Connects to SQLite, PostgreSQL, MySQL, and other SQL databases via SQLAlchemy
-- **Multi-Table Support**: Discovers all tables, schemas, primary/foreign keys, and relationships
-- **Semantic Column Typing**: Heuristically classifies each column (id, foreign_key, date, boolean, category, numeric, ratio, text) to guide preprocessing and joins
-- **Saved Query Library**: Name, persist, and re-run SQL queries (stored per database)
-- **Auto-Join / Query Builder**: Pick related tables; FK metadata drives the JOIN and disambiguated SELECT
-- **DB-Native Sampling**: Load a random sample or specific columns, pushed down into SQL (unlocks large tables)
-- **Visual ER Diagram**: Interactive schema rendering of tables and foreign-key relationships
-- **Read-Only Safety + Timeouts**: Block write statements and cap query time by default
-- **Schema Drift Profiling**: Capture and compare data/schema snapshots to flag drift over time
-- **Relational Deep-Feature Synthesis**: Auto-generate ML features by aggregating child tables in SQL (counts, sums, avgs) via FK metadata
-- **Versioned Experiments + Champion**: Every training run records its data source, config, metrics, and an auto-saved model; promote the best run to champion ("promote if better") and roll back to the previous champion, reloading its model automatically
-- **Safe NLP→SQL Validation**: Schema-aware validation of user/LLM-generated SQL — verifies table/column references and flags writes, cartesian joins, `SELECT *`, and missing `LIMIT` before running
-- **Anomaly Detection**: Unsupervised Isolation Forest scoring over loaded data or a table, with per-feature importance and per-outlier driver explanations
-- **Prediction Explainability & What-If**: Per-record feature contributions and single-feature perturbation ("what-if") analysis on a trained model
-- **Model Drift Monitoring**: Capture a training-time feature reference (PSI) and compare a live table's distributions to flag drift before it degrades predictions
-- **Suggested Target on Load**: After loading data, heuristic target-column ranking instantly proposes the best column + task type (offline, no LLM needed) and pre-fills the target field
-- **One-Click Auto-Train**: A single button that suggests a target → auto-prepares (drops constant / high-cardinality ID columns) → proposes a cached matching experiment if one exists → otherwise trains the best model
-- **Analysis & Target Caching**: Expensive analysis results are memoized per-dataset fingerprint and invalidated automatically when the data changes
-- **Configurable Parallelism**: `n_jobs` for cross-validation and tuning is tunable (Train tab / API) so users can raise CPU usage when it's safe
-- **Reusable Pipeline Recipes**: Save the current data source + preprocessing + training config as a named recipe, then reproduce it on new/updated data (or retrain) in one click
-- **Re-Predict Production Table**: Re-score a (possibly changed) table with the trained model, flagging per-feature drift (PSI) and anomalous rows in one pass
-- **Early-Stop Model Search**: Stop evaluating candidate models once the best score stops improving after N consecutive models (avoids wasted training time)
-- **Batch What-If**: Perturb one feature across all loaded rows and summarize the effect on predictions (mean delta for regression, % class-change for classification)
-- **Async Everything + Notifications**: Long-running ops (analyze, synthesize, monitor, anomaly, re-predict, recipe-apply) run as background jobs with completion toasts
-- **Feature Health / Smarter Filtering**: Detect near-constant and high-cardinality ID/free-text columns and highly-correlated feature pairs (multicollinearity) with suggested drops before training
-- **Result Snapshots & Diff**: Save analysis / training / prediction results as named snapshots and compare two of them field-by-field (numeric deltas, changed flags) to see before-vs-after or model-vs-model
-- **Command Palette**: Press **Ctrl/Cmd+K** (or the sidebar button) for a keyboard-driven palette that switches tabs and runs common actions instantly
-- **Automatic Model Selection**: Evaluates 9 regression models and 7 classification models using cross-validation to find the best performer
-- **Hyperparameter Tuning**: Optionally tune the best-selected model with `GridSearchCV` (Full) or `RandomizedSearchCV` (Quick) — Off / Quick / Full
-- **Task Type Auto-Detection**: Automatically determines if the task is regression or classification based on data characteristics
-- **Intelligent Feature Engineering**: 
-  - Auto-detects and removes ID columns (auto-increment primary keys)
-  - Handles categorical variables with one-hot encoding
-  - Imputes missing values
-  - Scales numeric features
-- **Comprehensive Analysis**: Statistical summaries, correlations, column insights, target analysis, and a data-quality / health report
-- **Classification Diagnostics**: Confusion matrix and per-class precision/recall/F1 report for classification tasks
-- **Prediction Engine**: Make predictions on new data — single records, JSON batches, DB tables, loaded datasets, or uploaded CSVs
-- **Model Persistence**: Save and load trained models (portable `.joblib`), plus browser download/upload
-- **Export to CSV**: Download the loaded/preprocessed data, batches, or prediction results
-- **Asynchronous Training**: Live progress bar with per-model scores and a Cancel button (training runs in a background job)
-- **Inline Charts**: Dependency-free SVG bar charts for model scores, feature importances, and class distributions
-- **Interactive Data Visualization**: Correlation heatmaps (diverging color scale), numeric distribution bands, categorical value-count bars, and a heatmap-style confusion matrix — rendered client-side with zero dependencies and no backend changes
-- **Shareable Reports & Export**: One-click self-contained **HTML analysis report** (charts + summary stats + inline CSS, printable/shareable), **Markdown training report** (best model, metrics, candidate scores, feature importances, hyperparameters), and **export any SVG chart as a PNG** image for slides/docs
-- **Monitoring & Lifecycle Dashboards**: Color-coded **PSI drift bars** (green/amber/red per feature with threshold legend) as you check a live table, an **anomaly scatter plot** (pick any two numeric features, outliers highlighted), and a **model leaderboard** (CV-score bars with a ⭐ champion) plus a dated run history in Experiments &amp; Champion
-- **Productivity & Explainability**: **Quick View** (one-click summary + charts), **SHAP-style diverging contribution bars** per prediction with per-row "Explain" buttons in prediction tables (and an "Explain first prediction row" shortcut), **sidebar sparkline previews** for tables, **persistent dashboard state** (tab/target/connection restored across sessions via localStorage), and new **⌘K command-palette actions** (export reports, quick view, explain, monitor)
-- **Feature Importance**: Identifies which features most influence predictions
-- **Data Preprocessing**: Drop/fill missing values, filter rows, scale features, encode categories, and create new features
-- **Local LLM Advisor (LM Studio)**: Natural-language → SQL, target column recommendations, preprocessing suggestions, model-result interpretation, and prediction narratives — all running locally with a heuristic fallback when the server is offline
-
-## Installation
-
+## Install
 ```bash
-# Create virtual environment
 python -m venv .venv
-
-# Activate (Windows)
-.venv\Scripts\activate
-
-# Activate (macOS/Linux)
-source .venv/bin/activate
-
-# Install dependencies
+.venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
+python create_sample_db.py        # optional: generate a sample DB
 ```
 
-> **Auto-install**: `main.py` automatically checks for the required packages
-> (pandas, numpy, scikit-learn, SQLAlchemy, joblib, tabulate) and installs any
-> missing ones into your active virtual environment via pip before running.
-> You can skip the manual `pip install` step entirely — just run
-> `python main.py ...` and it will set itself up.
-
-## Quick Start
-
-### 1. Create a sample database
-
+## Quick Start (CLI)
 ```bash
-python create_sample_db.py
-```
-
-### 2. Run the demo
-
-```bash
-python demo.py
-```
-
-### 3. Use the Command-Line Interface
-
-The CLI provides a full interface for interacting with the ML Agent:
-
-```bash
-# List tables in a database
-python main.py -db sample_company.db --list-tables
-
-# Get a comprehensive database overview
-python main.py -db sample_company.db --overview
-
-# Analyze data
-python main.py -db sample_company.db -t employees --analyze summary
-python main.py -db sample_company.db -t employees --analyze correlations
-python main.py -db sample_company.db -t employees -y salary --analyze target
-
-# Train a model (auto-detect task type)
-python main.py -db sample_company.db -t employees -y salary
-
-# Train and hyperparameter-tune the best model (quick / full / off)
-python main.py -db sample_company.db -t employees -y salary --tuning quick
-
-# Run a data-quality / health report
-python main.py -db sample_company.db -t employees --analyze health
-
-# Train a classification model explicitly
-python main.py -db sample_company.db -t employees -y education_level --task-type classification
-
-# Train and predict on new data (JSON)
-python main.py -db sample_company.db -t employees -y salary \
-    --predict '{"age": 30, "years_experience": 5.0, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75.0, "satisfaction_score": 70.0}'
-
-# Train and predict from a CSV file, save results
-python main.py -db sample_company.db -t employees -y salary \
-    --predict-file new_employees.csv --output predictions.csv
-
-# Use a custom SQL query as the dataset
-python main.py -db sample_company.db --query "SELECT * FROM employees" -y salary
-
-# Save and reuse a trained model
-python main.py -db sample_company.db -t employees -y salary --save-model model.joblib
-python main.py --load-model model.joblib \
-    --predict '{"age": 30, "years_experience": 5.0, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75.0, "satisfaction_score": 70.0}'
-
-# Show model info and feature importance
-python main.py --load-model model.joblib --model-info --feature-importance
-
-# Output results as JSON
-python main.py -db sample_company.db -t employees -y salary --json
-
-# ===== LLM Advisor (requires LM Studio running locally) =====
-# Check LM Studio availability
-python main.py -db sample_company.db --llm-check
-
-# Ask a natural-language question -> SQL (executed automatically)
-python main.py -db sample_company.db --llm-ask "What is the average salary per department?"
-
-# Let the LLM recommend that best target column
-python main.py -db sample_company.db -t employees --llm-suggest-target
-
-# Let the LLM recommend a preprocessing chain
-python main.py -db sample_company.db -t employees -y salary --llm-suggest-preprocessing
-
-# Apply the LLM-recommended preprocessing chain and train
-python main.py -db sample_company.db -t employees -y salary --llm-apply-preprocessing
-
-# Explain the training results in plain language
-python main.py -db sample_company.db -t employees -y salary --llm-explain-results
-
-# Explain the first 3 predictions in plain language
-python main.py -db sample_company.db -t employees -y salary \
-    --predict '{"age": 30, "years_experience": 5.0, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75.0, "satisfaction_score": 70.0}' \
-    --llm-explain-predictions 3
-
-# Show help
+python main.py -db sample_company.db -t employees -y salary                 # overview + train + report
+python main.py -db sample_company.db -t employees -y salary --tuning quick  # hyperparameter tune
+python main.py -db sample_company.db -t employees --predict '{"age":30,"years_experience":5,"education_level":"Bachelor"}'
+python main.py -db sample_company.db -t employees -y salary --llm           # local LLM advisor (LM Studio)
 python main.py --help
 ```
 
-### 4. Use the agent programmatically
+## Web Dashboard
+```bash
+python web_api.py --db sample_company.db                 # http://localhost:5000
+python web_api.py --db sample_company.db --host 0.0.0.0 --port 8080   # served via waitress
+python web_api.py --debug                                # force Flask dev server
+```
+On Linux/macOS use `gunicorn -c gunicorn.conf.py wsgi:app` for multi-process scaling.
 
+## Programmatic Usage
 ```python
 from ml_agent import MLAgent
-
-# Initialize agent with a SQL database
-agent = MLAgent("sample_company.db")
-
-# Explore the database
-tables = agent.list_tables()
-print(f"Tables: {tables}")
-
-# Load a table
+agent = MLAgent("sample_company.db")                    # or a postgresql:// / mysql+pymysql:// URL
+agent.list_tables()
 df = agent.load_table("employees")
-
-# Analyze the data
 analysis = agent.analyze(target_column="salary", analysis_type="summary")
-
-# Train the best model automatically
-results = agent.train(target_column="salary")
-print(agent.format_results(results))
-
-# Train with hyperparameter tuning of the best model ("off" / "quick" / "full")
-results = agent.train(target_column="salary", tuning="quick")
-print("Best params:", results.get("best_params"))
-
-# Make predictions
-new_employee = {
-    "age": 30,
-    "years_experience": 5.0,
-    "education_level": "Bachelor",
-    "dept_id": 1,
-    "performance_score": 75.0,
-    "satisfaction_score": 70.0,
-}
-prediction = agent.predict_single(new_employee)
-print(f"Predicted salary: ${prediction['prediction']:,.2f}")
-
-# Save and load models
-agent.save_model("my_model.joblib")
-agent.load_model("my_model.joblib")
-
-# Close the connection
+results = agent.train(target_column="salary", tuning="quick")  # auto best model
+agent.predict_single({"age": 30, "years_experience": 5, "education_level": "Bachelor"})
+agent.save_model("model.joblib"); agent.load_model("model.joblib")
 agent.close()
 ```
 
+## Training
+- **Task type** auto-detected (regression / classification); `--task-type` overrides it.
+- **Model selection**: cross-validated scoring (`StratifiedKFold` for classification), optional early-stop.
+- **Tuning**: `off` / `quick` (`RandomizedSearchCV`) / `full` (`GridSearchCV`) — via `agent.train(..., tuning=)`, CLI `--tuning`, or the web UI's Tuning dropdown. Best params are shown in results and stored with the model.
+
 ## Preprocessing
-
-The CLI supports common data preprocessing operations applied before model training:
-
+Chain operations (applied in order) via the CLI, `agent.apply_preprocessing(...)`, or the web Preprocess tab: `--dropna`, `--fillna`, `--drop-columns`, `--keep-columns`, `--drop-duplicates`, `--filter`, `--scale standard|minmax`, `--encode label|onehot`, `--sample`, `--head`, and feature engineering (`--create-ratio|product|difference|bins`). Examples:
 ```bash
-# Drop rows with missing values
-python main.py -db sample_company.db -t employees --dropna -y salary
-
-# Fill missing values
-python main.py -db sample_company.db -t employees --fillna median -y salary
-python main.py -db sample_company.db -t employees --fillna constant --fillna-value 0 -y salary
-
-# Drop or keep columns
-python main.py -db sample_company.db -t employees --drop-columns "name,emp_id" -y salary
-python main.py -db sample_company.db -t employees --keep-columns "age,salary,education_level" -y salary
-
-# Remove duplicates
-python main.py -db sample_company.db -t employees --drop-duplicates -y salary
-
-# Filter rows with a query expression
-python main.py -db sample_company.db -t employees --filter "salary > 50000" -y salary
-
-# Scale numeric features (target is excluded automatically)
-python main.py -db sample_company.db -t employees --scale standard -y salary
-python main.py -db sample_company.db -t employees --scale minmax -y salary
-
-# Encode categorical columns
-python main.py -db sample_company.db -t employees --encode label -y salary
-python main.py -db sample_company.db -t employees --encode onehot -y salary
-
-# Sample or limit rows
-python main.py -db sample_company.db -t employees --sample 100 -y salary
-python main.py -db sample_company.db -t employees --head 50 -y salary
-
-# Feature engineering
-python main.py -db sample_company.db -t employees --create-ratio salary years_experience salary_per_year -y salary
-python main.py -db sample_company.db -t employees --create-product age years_experience experience_score -y salary
-python main.py -db sample_company.db -t employees --create-difference performance_score satisfaction_score gap -y salary
-python main.py -db sample_company.db -t employees --create-bins age 5 -y salary
-
-# View preprocessing summary
-python main.py -db sample_company.db -t employees --drop-columns "name" --scale standard --encode label --preprocess-summary -y salary
-
-# Save the preprocessed dataset as a new database (original is untouched)
 python main.py -db sample_company.db -t employees --drop-columns "name" --scale standard --encode label \
-    --save-preprocessed-db preprocessed.db
-
-# Save with a custom table name
-python main.py -db sample_company.db -t employees --drop-columns "name" \
-    --save-preprocessed-db preprocessed.db --preprocessed-table cleaned_employees
-
-# Also copy all original tables into the new database
-python main.py -db sample_company.db -t employees --drop-columns "name" \
-    --save-preprocessed-db preprocessed.db --include-original-tables
+    --save-preprocessed-db preprocessed.db -y salary     # write cleaned data to a new DB (original untouched)
+python main.py -db sample_company.db -t employees --fillna median -y salary
 ```
+Feature-engineering ops are re-applied automatically to prediction data.
 
-All preprocessing operations can be chained together and are applied in order. Feature engineering operations (like `--create-ratio`) are automatically applied to prediction data as well.
-
-The `--save-preprocessed-db` flag writes the preprocessed dataset to a brand new SQLite database file, leaving the original database completely untouched. Use `--include-original-tables` to also copy all original tables alongside the preprocessed data.
-
-## Connecting to Different Databases
-
+## SQL Queries
 ```python
-# SQLite
-agent = MLAgent("mydatabase.db")
-
-# PostgreSQL
-agent = MLAgent("postgresql://user:password@localhost/dbname")
-
-# MySQL
-agent = MLAgent("mysql+pymysql://user:password@localhost/dbname")
-
-# SQL Server
-agent = MLAgent("mssql+pyodbc://user:password@server/dbname")
-```
-
-## Using SQL Queries
-
-```python
-# Execute custom SQL queries
 result = agent.execute_query("SELECT * FROM employees WHERE salary > 80000")
-
-# Load query results as the working dataset
-agent.load_query_as_data("""
-    SELECT e.age, e.years_experience, e.education_level,
-           s.product_category, s.units_sold
-    FROM employees e
-    JOIN sales s ON e.emp_id = s.emp_id
-""")
-
-# Train on the joined data
-results = agent.train(target_column="units_sold")
+agent.load_query_as_data("SELECT e.age, s.units_sold FROM employees e JOIN sales s ON e.emp_id = s.emp_id")
+results = agent.train(target_column="units_sold")   # train on joined data
 ```
 
-## Model Selection
+## Reference
 
-The agent automatically evaluates these models and selects the best one:
-
-### Regression Models
-- Linear Regression
-- Ridge Regression
-- Lasso Regression
-- Decision Tree
-- Random Forest
-- Gradient Boosting
-- Extra Trees
-- K-Neighbors
-- SVR
-
-### Classification Models
-- Logistic Regression
-- Decision Tree
-- Random Forest
-- Gradient Boosting
-- Extra Trees
-- K-Neighbors
-- SVC
-
-### Parameter Tuning
-
-After the best model is selected, you can optionally tune its hyperparameters. Two levels are offered:
-
-- **Quick** — `RandomizedSearchCV` samples a bounded number (`n_iter=8`) of random hyperparameter combinations via 3-fold CV. Fast and a great default.
-- **Full** — `GridSearchCV` exhaustively searches every combination in the grid via 3-fold CV. More thorough, but slower on large datasets.
-
-Tuning is controlled per call: `agent.train(..., tuning="quick")`, the CLI `--tuning quick`, or the web UI's **Tuning** dropdown (No / Quick / Full). The chosen best parameters are shown in results and stored with the saved model.
-
-## CLI Reference
-
+### CLI Flags
 | Flag | Description |
 |------|-------------|
 | `-db, --database` | SQL database connection string or SQLite file path |
-| `-t, --table` | Table name to use as the dataset |
+| `-t, --table` | Table to use as the dataset |
 | `--query` | Custom SQL query to use as the dataset |
-| `--limit` | Maximum number of rows to load |
+| `--limit` | Max rows to load |
 | `-y, --target` | Target column to predict |
-| `--task-type` | Task type: `regression` or `classification` (auto-detected) |
-| `--test-size` | Fraction of data for test set (default: 0.2) |
-| `--cv-folds` | Number of cross-validation folds (default: 5) |
+| `--task-type` | `regression` or `classification` (auto-detected) |
+| `--test-size` | Test-set fraction (default: 0.2) |
+| `--cv-folds` | CV folds (default: 5) |
 | `--random-state` | Random seed (default: 42) |
-| `--dropna` | Drop rows with missing values |
-| `--fillna` | Fill missing values: `mean`, `median`, `mode`, `zero`, `constant`, `ffill`, `bfill` |
-| `--fillna-value` | Value to use with `--fillna constant` |
-| `--drop-columns` | Comma-separated columns to drop |
-| `--keep-columns` | Comma-separated columns to keep (drops all others) |
-| `--drop-duplicates` | Drop duplicate rows |
-| `--filter` | Filter rows using pandas query expression |
-| `--scale` | Scale numeric columns: `standard` (z-score) or `minmax` |
-| `--encode` | Encode categorical columns: `label` or `onehot` |
-| `--sample` | Randomly sample N rows |
-| `--head` | Keep only the first N rows |
-| `--create-ratio` | Create ratio feature: `--create-ratio col1 col2 new_col` |
-| `--create-product` | Create product feature: `--create-product col1 col2 new_col` |
-| `--create-difference` | Create difference feature: `--create-difference col1 col2 new_col` |
-| `--create-bins` | Bin a column: `--create-bins column 5` |
-| `--preprocess-summary` | Show summary of preprocessing operations |
-| `--save-preprocessed-db` | Save preprocessed dataset as a new SQL database (original untouched) |
-| `--preprocessed-table` | Table name for the saved preprocessed database |
-| `--include-original-tables` | Also copy all original tables into the saved database |
-| `--list-tables` | List all tables in the database |
-| `--overview` | Show comprehensive database overview |
-| `--analyze` | Analysis type: `summary`, `correlations`, `insights`, `target`, `health` |
-| `--tuning` | Hyperparameter-tune the best model: `off`, `quick`, or `full` (default: off) |
-| `--feature-importance` | Show feature importance from trained model |
-| `--model-info` | Show information about trained model |
-| `--llm` | Enable the local LLM advisor (LM Studio) |
-| `--llm-url` | LM Studio server URL (default: `http://localhost:1234/v1`) |
-| `--llm-model` | LM Studio model name (default: server's loaded model) |
-| `--llm-timeout` | LLM request timeout in seconds (default: 60) |
-| `--llm-check` | Check LM Studio server availability |
-| `--llm-ask` | Natural-language question to convert into SQL |
-| `--llm-suggest-target` | Recommend a target column using the LLM (heuristic fallback) |
-| `--llm-suggest-preprocessing` | Recommend a preprocessing operation chain using the LLM |
-| `--llm-explain-results` | Plain-language interpretation of training results |
-| `--llm-explain-predictions` | Explain the first N prediction rows in plain language |
-| `--llm-apply-preprocessing` | Apply the LLM-recommended preprocessing chain |
-| `--predict` | JSON string of data to predict on |
-| `--predict-file` | CSV file containing data to predict on |
-| `--save-model` | Save trained model to path |
-| `--load-model` | Load a previously trained model |
-| `-o, --output` | Save predictions to CSV file |
-| `--json` | Output results as JSON |
-| `-v, --verbose` | Show verbose output |
-
-## API Reference
-
-### MLAgent
-
-| Method | Description |
-|--------|-------------|
-| `list_tables()` | List all tables in the database |
-| `get_database_overview()` | Get comprehensive database metadata |
-| `get_table_summary()` | Get summary of all tables |
-| `load_table(table, limit)` | Load a table into memory |
-| `execute_query(query)` | Execute a custom SQL query |
-| `load_query_as_data(query)` | Load query results as working dataset |
-| `preprocess(df)` | Get a DataPreprocessor for the dataset |
-| `apply_preprocessing(ops)` | Apply preprocessing operations to the dataset |
-| `get_preprocessing_summary()` | Get summary of preprocessing operations |
-| `save_preprocessed_db(path, table_name, include_original_tables)` | Save preprocessed dataset as a new SQL database |
-| `analyze(target, type)` | Perform data analysis (`summary`, `correlations`, `insights`, `target`, `health`) |
-| `train(target, task_type)` | Train the best model; optional `tuning="off"/"quick"/"full"`, `progress_callback` |
-| `predict(data)` | Make predictions on new data |
-| `predict_single(data)` | Predict a single record |
-| `get_model_info()` | Get trained model information |
-| `get_feature_importance()` | Get feature importance rankings |
-| `enable_llm(base_url, model, timeout)` | Enable the LLM advisor (LM Studio) |
-| `llm_check()` | Check LLM advisor availability |
-| `llm_generate_sql(question)` | Convert natural language to SQL |
-| `llm_suggest_target(preferred)` | Recommend a target column (heuristic fallback) |
-| `llm_suggest_preprocessing()` | Recommend a preprocessing chain |
-| `llm_explain_results(results)` | Interpret training results in plain language |
-| `llm_explain_predictions(predictions, top_n)` | Explain prediction rows in plain language |
-| `save_model(path)` | Save trained model to disk |
-| `load_model(path)` | Load a trained model |
-| `format_results(results)` | Format results as readable text |
+| `--dropna` / `--fillna [mean\|median\|mode\|zero\|constant\|ffill\|bfill]` | Handle missing values |
+| `--fillna-value` | Value for `--fillna constant` |
+| `--drop-columns` / `--keep-columns` | Comma-separated columns to drop / keep |
+| `--drop-duplicates` / `--filter "expr"` | Dedupe / filter rows (pandas query) |
+| `--scale standard\|minmax` | Scale numeric columns |
+| `--encode label\|onehot` | Encode categorical columns |
+| `--sample N` / `--head N` | Sample / keep first N rows |
+| `--create-ratio` / `--create-product` / `--create-difference` | Create feature: `--create-X c1 c2 new_col` |
+| `--create-bins col N` | Bin a numeric column |
+| `--preprocess-summary` | Show preprocessing summary |
+| `--save-preprocessed-db path` | Write cleaned data to a new SQLite DB (original untouched) |
+| `--preprocessed-table` / `--include-original-tables` | Table name / also copy original tables |
+| `--list-tables` / `--overview` | List tables / show DB overview |
+| `--analyze summary\|correlations\|insights\|target\|health` | Run analysis |
+| `--tuning off\|quick\|full` | Hyperparameter tune the best model |
+| `--feature-importance` / `--model-info` | Show feature importance / model info |
+| `--predict '{"col": val}'` | Predict a JSON record |
+| `--predict-file file.csv` | Predict rows from a CSV |
+| `--save-model path` / `--load-model path` | Save / load a model |
+| `-o, --output file.csv` | Save predictions to CSV |
+| `--json` / `-v, --verbose` | JSON output / verbose |
+| `--llm` + `--llm-*` | LLM advisor flags (see below) |
 
 ### Analysis Types
-- `summary` - Basic stats, correlations, column insights, target analysis
-- `correlations` - Correlation matrix for numeric columns
-- `insights` - Per-column statistics and distributions
-- `target` - Target column distribution and feature correlations
-- `health` - Data-quality report: missing values, duplicates, per-column health, class balance, and warnings
+- `summary` — basic stats, correlations, column insights, target analysis
+- `correlations` — numeric correlation matrix
+- `insights` — per-column stats & distributions
+- `target` — target distribution + feature correlations
+- `health` — quality report: missing values, duplicates, per-column health, class balance, warnings
 
 ## LLM Advisor (LM Studio)
+Uses a **local** OpenAI-compatible LLM (LM Studio at `http://localhost:1234/v1`) — no data leaves the machine. If the server is offline, every method falls back to a built-in heuristic.
 
-The ML Agent can use a **local** LLM served by LM Studio for natural-language intelligence without sending sensitive company data to the cloud. LM Studio exposes an OpenAI-compatible API at `http://localhost:1234/v1`.
+| Capability | CLI Flag |
+|------------|----------|
+| Availability check | `--llm-check` |
+| Natural language → SQL (schema-validated) | `--llm-ask "..."` |
+| Target recommendation | `--llm-suggest-target` |
+| Preprocessing advice / apply | `--llm-suggest-preprocessing` / `--llm-apply-preprocessing` |
+| Result interpretation | `--llm-explain-results` |
+| Prediction narratives | `--llm-explain-predictions N` |
 
-### Setup
+## MLAgent API (Python)
+`list_tables()` `get_database_overview()` `get_table_summary()` `load_table(table, limit)` `execute_query(q)` `load_query_as_data(q)` `apply_preprocessing(ops)` `get_preprocessing_summary()` `save_preprocessed_db(path, table_name, include_original)` `analyze(target, type)` `train(target, task_type, tuning=, progress_callback=)` `predict(data)` `predict_single(row)` `get_model_info()` `get_feature_importance()` `save_model(path)` `load_model(path)` `format_results(results)` `enable_llm(base_url, model, timeout)` `llm_check()` `llm_generate_sql(q)` `llm_suggest_target()` `llm_suggest_preprocessing()` `llm_explain_results()` `llm_explain_predictions()`
 
-1. Download and install [LM Studio](https://lmstudio.ai/)
-2. Download a model (e.g., Llama 3.1 8B, Qwen 2.5, etc.)
-3. Load the model in LM Studio
-4. Start the local server (Settings → Developer → Start Server)
+## Web Dashboard
+Tabs: **Data** (connect, browse, SQL, preview/export), **Preprocess**, **Analyze** (summary/correlations/insights/target/health + charts, snapshots & diff), **Train** (best model, tuning, live progress + cancel, feature-health), **Predict** (single/batch/table/CSV, explain, what-if), **Model Persistence**, **Schema** (ER diagram, auto-join, drift profiling, anomaly & drift monitoring, safety settings), **LLM Advisor**. Press **`⌘K`** for the command palette.
 
-The ML Agent automatically connects to `http://localhost:1234/v1`. If the server is offline, every LLM method degrades gracefully to a built-in heuristic, so the agent never crashes.
+## REST API (abridged)
+Core endpoints (all `/api/...`): `state`, `POST connect`, `POST disconnect`, `GET tables`, `GET tables/<t>/schema`, `GET tables/<t>/preview`, `GET overview`, `POST load`, `POST query`, `POST query/validate`, `POST load-query`, `GET columns/<t>/types`, `GET relationships`, `POST load-sample`, `POST load-join`, `POST query/save`, `GET query/list`, `POST profile/capture`, `GET profile/list`, `POST profile/compare`, `POST settings`, `POST synthesize`, `GET experiments`, `GET experiments/champion`, `POST experiments/<id>/promote`, `POST experiments/rollback`, `POST experiments/compare`, `POST preprocess`, `GET preprocess-summary`, `POST analyze`, `POST anomaly/detect`, `POST monitor/capture`, `POST monitor/check`, `GET suggest-targets`, `POST auto-prepare`, `POST feature-health`, `POST experiments/propose`, `POST train`, `GET train/status/<id>`, `POST train/cancel/<id>`, `GET model-info`, `POST predict`, `POST explain/prediction`, `POST explain/whatif`, `POST explain/batch-whatif`, `POST repredict`, `POST op/start`, `GET op/status/<id>`, `GET notifications`, `POST recipe/save`, `GET recipe/list`, `POST recipe/apply`, `GET snapshots`, `POST snapshots`, `POST snapshots/diff`, `POST predict/table`, `POST predict/current`, `POST predict/upload`, `GET export/csv`, `POST save-model`, `POST load-model`, `GET model/download`, `POST upload-model`, `POST llm/enable`, `GET llm/check`, `POST llm/sql`, `POST llm/suggest-target`, `POST llm/suggest-preprocessing`, `POST llm/apply-preprocessing`, `POST llm/explain-results`, `POST llm/explain-predictions`, plus ops `/health`, `/health/ready`, `/status`.
 
-### Capabilities
-
-| Capability | CLI Flag | Description |
-|------------|----------|-------------|
-| Availability check | `--llm-check` | Pings LM Studio and reports the loaded model |
-| Natural language → SQL | `--llm-ask "..."` | Generates SQL, then executes it against the database |
-| Target recommendation | `--llm-suggest-target` | Recommends which column to predict, with task type |
-| Preprocessing advice | `--llm-suggest-preprocessing` | Recommends a chain of clean/feature-engineering ops |
-| Apply suggested preprocessing | `--llm-apply-preprocessing` | Applies the LLM-recommended ops automatically |
-| Result interpretation | `--llm-explain-results` | Explains the metrics/feature importances into plain language |
-| Prediction narratives | `--llm-explain-predictions N` | Explains the first N prediction rows |
-
-## Web API & Dashboard
-
-The ML Agent includes a **Flask-based web API** and a **browser dashboard** for interacting with the agent visually.
-
-### Quick Start
-
-```bash
-# Start the web server (auto-connects to a database)
-python web_api.py --db sample_company.db
-
-# Or start without a database and connect via the UI
-python web_api.py
-
-# Custom host/port
-python web_api.py --db sample_company.db --host 0.0.0.0 --port 8080
-
-# Production: run with --debug to force the Flask dev server; otherwise the
-# app automatically serves via the waitress production WSGI server (threads by
-# default). See "Production Deployment & Scalability" below.
-```
-
-Then open **http://localhost:5000** in your browser.
-
-### Dashboard Features
-
-| Tab | Description |
-|-----|-------------|
-| **Data** | Connect to a database, browse tables, run SQL queries, preview/export data |
-| **Preprocess** | Queue and apply preprocessing operations, or let the LLM suggest them; export the result |
-| **Analyze** | Run summary, correlations, insights, target, and data-health analysis (with inline charts); save any result as a named **snapshot** and **diff** two snapshots side-by-side |
-| **Train** | Train the best model with **Off / Quick / Full hyperparameter tuning**, live progress + cancel, model-score and feature-importance charts, and a confusion matrix / classification report for classification tasks. Includes a **Feature Health** check (near-constant / high-cardinality / multicollinearity warnings) |
-| **Predict** | Predict single JSON records, batch-predict a DB table / loaded data / uploaded CSV, export predictions to CSV, explain a prediction by feature contributions, and run single-feature what-if analysis |
-| **Model Persistence** | Save, download, load, or upload&load portable `.joblib` models |
-| **Schema** | ER diagram, semantic column types, auto-join builder, saved queries, sample loading, drift profiling, anomaly detection, model-drift monitoring, and read-only/query-safety settings |
-| **LLM Advisor** | Enable LM Studio, ask natural-language questions (with schema-validated SQL), get target/preprocessing suggestions, and explain results |
-
-### REST API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/state` | Current agent state (connection, loaded data, model, LLM) |
-| `POST` | `/api/connect` | Connect to a database `{"connection": "sample_company.db"}` |
-| `POST` | `/api/disconnect` | Disconnect from the database |
-| `GET` | `/api/tables` | List all tables |
-| `GET` | `/api/tables/<table>/schema` | Get table schema |
-| `GET` | `/api/tables/<table>/preview` | Preview table data |
-| `GET` | `/api/overview` | Comprehensive database overview |
-| `POST` | `/api/load` | Load a table as the working dataset `{"table": "employees"}` |
-| `POST` | `/api/query` | Execute a SQL query `{"query": "SELECT * FROM employees"}` |
-| `POST` | `/api/query/validate` | Validate a SQL statement against the schema `{"query": "SELECT ..."}` |
-| `POST` | `/api/load-query` | Load query results as the working dataset |
-| `GET` | `/api/columns/<table>/types` | Semantic column types for a table |
-| `GET` | `/api/relationships` | Foreign-key relationships across tables |
-| `POST` | `/api/load-sample` | Load a DB-native sampled subset `{"table": ..., "fraction": 0.1, "limit": 100}` |
-| `POST` | `/api/load-join` | Auto-join + load related tables `{"tables": ["employees","departments"], "join_type": "inner"}` |
-| `POST` | `/api/query/build-join` | Build an auto-join SQL query for a set of tables |
-| `POST` | `/api/query/save` | Save a named query `{"name": ..., "query": ...}` |
-| `GET` | `/api/query/list` | List saved queries |
-| `GET` | `/api/query/get/<name>` | Get a saved query |
-| `POST` | `/api/query/delete/<name>` | Delete a saved query |
-| `POST` | `/api/profile/capture` | Capture a schema/data snapshot `{"name": "snap1"}` |
-| `GET` | `/api/profile/list` | List captured profiles |
-| `POST` | `/api/profile/compare` | Compare two profiles `{"a": ..., "b": ...}` |
-| `POST` | `/api/settings` | Update DB safety / parallelism settings `{"read_only": false, "timeout": 30, "n_jobs": 4}` |
-| `POST` | `/api/synthesize` | Generate relational deep features `{"table": "employees", "include_counts": true}` |
-| `GET` | `/api/experiments` | List recorded training experiments |
-| `GET` | `/api/experiments/champion` | Get the current champion experiment |
-| `POST` | `/api/experiments/<eid>/promote` | Promote an experiment if it beats the champion (higher CV score wins) and reload its model |
-| `POST` | `/api/experiments/rollback` | Revert the champion to the previous experiment and reload its model |
-| `POST` | `/api/experiments/<id>/champion` | Set an experiment as champion |
-| `POST` | `/api/experiments/compare` | Compare two experiments `{"a": ..., "b": ...}` |
-| `DELETE` | `/api/experiments/<id>` | Delete an experiment |
-| `POST` | `/api/preprocess` | Apply preprocessing operations `{"operations": [{"op": "dropna"}]}` |
-| `GET` | `/api/preprocess-summary` | Get preprocessing summary |
-| `POST` | `/api/save-preprocessed-db` | Save preprocessed dataset as a new database |
-| `POST` | `/api/analyze` | Run analysis `{"type": "summary", "target_column": "salary"}` (`type` can be `summary`/`correlations`/`insights`/`target`/`health`) |
-| `POST` | `/api/anomaly/detect` | Detect anomalies `{"table": "employees", "contamination": 0.1}` |
-| `POST` | `/api/monitor/capture` | Capture a feature-distribution reference from loaded data |
-| `POST` | `/api/monitor/check` | Compare a live table against the reference `{"table": "sales"}` (PSI drift) |
-| `GET` | `/api/suggest-targets` | Ranked heuristic target-column suggestions for the current data (offline, instant) |
-| `POST` | `/api/auto-prepare` | Auto-prepare data `{"target_column": "salary"}` — drops constant / high-cardinality ID columns |
-| `POST` | `/api/feature-health` | Feature-filtering health report `{"target_column": "salary", "corr_threshold": 0.95}` — near-constant / high-cardinality / multicollinearity |
-| `POST` | `/api/experiments/propose` | Find the best cached experiment matching `{"data_source": ..., "target_column": ...}` to reuse instead of retraining |
-| `POST` | `/api/train` | Start async training job `{"target_column": "salary", "task_type": null, "tuning": "quick", "n_jobs": 4, "early_stop": 3}` → returns `job_id` |
-| `GET` | `/api/train/status/<job_id>` | Poll training job status, progress, and results |
-| `POST` | `/api/train/cancel/<job_id>` | Cancel a running training job |
-| `GET` | `/api/model-info` | Get trained model information |
-| `POST` | `/api/predict` | Make predictions `{"data": [{"age": 30, ...}]}` |
-| `POST` | `/api/explain/prediction` | Explain a single prediction by feature contributions `{"data": {...}, "top_n": 5}` |
-| `POST` | `/api/explain/whatif` | Re-predict after changing one feature `{"data": {...}, "feature": "years_experience", "value": 15}` |
-| `POST` | `/api/explain/batch-whatif` | Perturb one feature across all loaded rows `{"feature": "years_experience", "value": 15}` |
-| `POST` | `/api/repredict` | Re-score a table with drift + anomaly flags `{"table": "employees", "limit": 100}` |
-| `POST` | `/api/op/start` | Start an async operation job `{"operation": "recipe_apply", "params": {...}}` → returns `job_id` |
-| `GET` | `/api/op/status/<job_id>` | Poll any async operation job status and result |
-| `GET` | `/api/notifications` | Drain async-job completion notifications as toasts |
-| `POST` | `/api/recipe/save` | Save the current pipeline as a reusable recipe `{"name": "sales_forecast", "target_column": "salary"}` |
-| `GET` | `/api/recipe/list` | List saved recipes |
-| `POST` | `/api/recipe/apply` | Reproduce a recipe synchronously `{"name": "sales_forecast"}` |
-| `POST` | `/api/recipe/delete/<name>` | Delete a saved recipe |
-| `GET` | `/api/snapshots` | List saved result snapshots |
-| `POST` | `/api/snapshots` | Save a result snapshot `{"name": ..., "kind": "analysis", "payload": {...}}` |
-| `GET` | `/api/snapshots/<name>` | Get a saved snapshot |
-| `DELETE` | `/api/snapshots/<name>` | Delete a saved snapshot |
-| `POST` | `/api/snapshots/diff` | Field-by-field diff of two snapshots `{"a": ..., "b": ...}` |
-| `POST` | `/api/predict/table` | Batch-predict every row of a table `{"table": "employees"}` |
-| `POST` | `/api/predict/current` | Batch-predict the currently loaded dataset |
-| `POST` | `/api/predict/upload` | Upload a CSV of features and batch-predict them |
-| `GET` | `/api/export/csv` | Download the loaded dataset as CSV |
-| `POST` | `/api/save-model` | Save the trained model `{"path": "model.joblib"}` |
-| `POST` | `/api/load-model` | Load a trained model `{"path": "model.joblib"}` |
-| `GET` | `/api/model/download` | Download a saved model file `?path=model.joblib` |
-| `POST` | `/api/upload-model` | Upload a `.joblib`/`.pkl` model file and load it |
-| `POST` | `/api/llm/enable` | Enable the LLM advisor `{"base_url": "...", "model": "..."}` |
-| `GET` | `/api/llm/check` | Check LLM availability |
-| `POST` | `/api/llm/sql` | Natural-language → SQL `{"question": "..."}` |
-| `POST` | `/api/llm/suggest-target` | Recommend a target column |
-| `POST` | `/api/llm/suggest-preprocessing` | Recommend preprocessing operations |
-| `POST` | `/api/llm/apply-preprocessing` | Apply LLM-recommended preprocessing |
-| `POST` | `/api/llm/explain-results` | Explain training results in plain language |
-| `POST` | `/api/llm/explain-predictions` | Explain prediction rows |
-
-### Example API Usage
-
-```bash
-# Connect to a database
-curl -X POST http://localhost:5000/api/connect \
-  -H "Content-Type: application/json" \
-  -d '{"connection": "sample_company.db"}'
-
-# Load a table
-curl -X POST http://localhost:5000/api/load \
-  -H "Content-Type: application/json" \
-  -d '{"table": "employees"}'
-
-# Train a model
-curl -X POST http://localhost:5000/api/train \
-  -H "Content-Type: application/json" \
-  -d '{"target_column": "salary"}'
-
-# Make a prediction
-curl -X POST http://localhost:5000/api/predict \
-  -H "Content-Type: application/json" \
-  -d '{"data": {"age": 30, "years_experience": 5, "education_level": "Bachelor", "dept_id": 1, "performance_score": 75, "satisfaction_score": 70}}'
-```
-
-## Production Deployment & Scalability
-
-The codebase ships production-ready server defaults so the same repo runs in
-dev and in production, tuned purely through environment variables (no code
-changes).
-
-### Production WSGI server
-
-`python web_api.py` automatically serves through **waitress** (a cross-platform,
-thread-pool WSGI server) instead of the Flask dev server. To force the dev
-server, pass `--debug`.
-
-```bash
-# waitress (cross-platform; installed by default)
-python web_api.py --db sample_company.db --host 0.0.0.0 --port 8080
-
-# Or via the WSGI entry point with any server (waitress CLI, gunicorn, uWSGI…)
-waitress-serve --listen=0.0.0.0:8080 --threads=8 wsgi:app
-```
-
-On Linux/macOS you may prefer **gunicorn** for multi-process scaling:
-
-```bash
-pip install gunicorn
-gunicorn -c gunicorn.conf.py wsgi:app
-```
-
-> **Scaling note:** the web API keeps one ML agent session (loaded data +
-> trained model) per process. For horizontal scaling, run multiple worker
-> processes (gunicorn workers); each worker has its own independent session,
-> or put a load balancer in front of several instances.
-
-### Runtime configuration (environment variables)
-
+## Configuration (environment variables)
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MLAGENT_LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `MLAGENT_LOG_LEVEL` | `INFO` | Logging verbosity |
 | `MLAGENT_WEB_HOST` / `MLAGENT_WEB_PORT` | `127.0.0.1` / `5000` | Bind address |
-| `MLAGENT_WEB_MAX_CONTENT_LENGTH` | `52428800` (50 MB) | Max upload/request body size |
-| `MLAGENT_WEB_UPLOAD_DIR` | `~/.mlagent/data/uploads` | Where DB/model uploads + per-db stores are kept |
-| `MLAGENT_WEB_TRUST_PROXY` | `false` | Honor `X-Forwarded-*` when behind a reverse proxy |
-| `MLAGENT_DB_POOL_SIZE` / `MLAGENT_DB_MAX_OVERFLOW` | `10` / `20` | Connection-pool bounds (network DBs) |
-| `MLAGENT_DB_POOL_RECYCLE` / `MLAGENT_DB_POOL_TIMEOUT` | `1800` / `30` (s) | Rotate/reclaim idle pooled connections |
-| `MLAGENT_DB_POOL_PRE_PING` | `true` | Detect + replace dropped connections before use |
-| `MLAGENT_SQLITE_BUSY_TIMEOUT` | `30000` (ms) | How long to wait on a locked SQLite file |
-| `MLAGENT_WSGI_THREADS` | `8` | Worker threads for the waitress server |
-| `MLAGENT_TRAIN_N_JOBS` | `1` | Default parallelism for CV/tuning |
+| `MLAGENT_WEB_MAX_CONTENT_LENGTH` | `50 MB` | Max upload/request body |
+| `MLAGENT_WEB_UPLOAD_DIR` | `~/.mlagent/data/uploads` | Uploads + per-db stores |
+| `MLAGENT_WEB_TRUST_PROXY` | `false` | Honor `X-Forwarded-*` behind a proxy |
+| `MLAGENT_DB_POOL_SIZE` / `MLAGENT_DB_MAX_OVERFLOW` | `10` / `20` | Pool bounds (network DBs) |
+| `MLAGENT_DB_POOL_RECYCLE` / `MLAGENT_DB_POOL_TIMEOUT` | `1800` / `30` | Rotate / reclaim idle connections |
+| `MLAGENT_DB_POOL_PRE_PING` | `true` | Detect broken connections |
+| `MLAGENT_DB_STMT_TIMEOUT` | unset | Native statement timeout (PG/MySQL) |
+| `MLAGENT_SQLITE_BUSY_TIMEOUT` | `30000` ms | SQLite lock wait |
+| `MLAGENT_WSGI_THREADS` | `8` | waitress worker threads |
+| `MLAGENT_TRAIN_N_JOBS` | `1` | CV/tuning parallelism |
+| `MLAGENT_MAX_CONCURRENT_JOBS` | unset | Async op concurrency cap (`429`) |
+| `MLAGENT_API_TOKEN` | unset | Require bearer token (401) |
+| `MLAGENT_RATE_LIMIT_PER_MINUTE` | `0` (off) | Per-IP request limit (429) |
+| `MLAGENT_JOBS_DB_PATH` | unset | Durable job store (SQLite) |
+| `MLAGENT_PROCESS_JOBS` | `false` | Run async jobs in a child process (hard-killable) |
+| `MLAGENT_REDIS_URL` | unset | Shared Redis rate limiter / session registry |
+| `MLAGENT_SESSIONS_DB_PATH` / `MLAGENT_SESSION_TTL` | unset / unset | Persistent session registry + TTL |
 
-### What changed for production
-
-- **Structured logging** replaces ad-hoc printing (`ml_agent/logging_utils.py`,
-  request logging in `web_api.py`).
-- **Config centralized** in `ml_agent/config.py` — no hard-coded tunables.
-- **Database engine lifecycle** (`ml_agent/database.py`) now uses a bounded,
-  pre-pinging connection pool with recycle/timeout for network databases and
-  correct busy-timeout + cross-thread settings for SQLite — so concurrent API
-  requests no longer exhaust or cross the in-process connection pool.
-- **Agent state is guarded** by an RLock so background training/ops cannot tear
-  the shared agent (model, `current_df`) mid-request, while reads stay lock-free.
-- **Request size caps + proxy support** and a WSGI entry point (`wsgi.py`).
-
-### Hardening tiers (heavy load / deep analysis)
-
-**Tier 1 — Reliability & compute**
-- Job IDs are now UUIDs (no more race/clobber) and background **op jobs run on a
-  bounded thread pool** with a hard concurrency cap (`MLAGENT_MAX_CONCURRENT_JOBS`) —
-  submissions beyond the cap get `429`.
-- **Training no longer holds the state lock for the whole fit**: the web layer
-  snapshots the data, runs the model search off-lock, and only the brief
-  snapshot/commit touch the lock (so `connect`/`load`/`predict` stay responsive).
-- **Native DB statement timeouts** (`MLAGENT_DB_STMT_TIMEOUT`, Postgres
-  `statement_timeout` / MySQL `max_execution_time`) replace thread-per-query.
-- Vectorized `_prepare_data` column scanning; **atomic JSON stores** (tmp+rename);
-  bounded LLM concurrency gate.
-
-**Tier 2 — Observability, auth, operations**
-- `/health` (liveness), `/health/ready` (readiness — 503 until connected) and
-  `/status` (request metrics, active jobs, sessions).
-- Graceful shutdown: SIGTERM/SIGINT refuse new work, drain in-flight jobs, close
-  sessions (orchestrators can rolling-deploy without orphaning clients).
-- Optional shared bearer token (`MLAGENT_API_TOKEN`) and per-IP rate limiting
-  (`MLAGENT_RATE_LIMIT_PER_MINUTE`, returns `429`).
-
-**Tier 3 — Scale**
-- **Durable job store** (`ml_agent/job_store.py`, SQLite via `MLAGENT_JOBS_DB_PATH`)
-  — jobs survive restarts; stale `running` jobs are marked `interrupted`; train/op
-  status endpoints fall back to the store.
-- **Persistent analysis cache** (`agent.enable_disk_cache`) keyed by data
-  fingerprint, so repeated deep analysis is near-free and shared across workers.
-- **Pagination & streaming**: `/api/predict/table` supports `limit`+`offset`;
-  `/api/export/csv` streams in chunks instead of building one giant string.
-- **Session isolation** (C3): send an `X-Session-Id` header (or body `session_id`)
-  to `/api/connect` to get an isolated agent per session. The default (no header)
-  session is fully backward compatible, so existing clients and the dashboard work
-  unchanged while advanced clients can scale sessions independently.
-
-### Follow-ups (hard-kill jobs, Redis, persistent sessions, repo hygiene)
-
-**1. Hard-killable background jobs (`MLAGENT_PROCESS_JOBS=1`)**
-- Off by default; when enabled (together with `MLAGENT_JOBS_DB_PATH`), **training and
-  op jobs run in a child process** (`ml_agent/workexec.py`) instead of a daemon thread,
-  so a genuinely stuck scikit-learn fit can be `terminate()`/`kill()`ed instead of
-  hanging a worker forever.
-- Parent/child communicate through the durable job store: the child re-connects to
-  the DB, re-hydrates the working dataset from a data spec, and writes status/result
-  back; the parent polls, honours `/api/train/cancel` (hard-kills on cancel), and
-  enforces a hard wall-clock ceiling. Jobs past the ceiling are terminated and marked
-  `timed_out`.
-- **The trained model is not lost**: the child writes the model file to the same
-  `models_dir` and emits `model_path`; on completion the parent calls
-  `agent.load_model(model_path)` so `predict` works immediately.
-- Notes: with `multiprocessing`'s `spawn` start method, whatever module is launched
-  must guard its entry point behind `if __name__ == "__main__":` (the shipped
-  `web_api.py`/`main.py` already do). Windows only supports `spawn`.
-
-**2. Redis-backed shared rate limiting (`MLAGENT_REDIS_URL`)**
-- `ml_agent/ratelimit.py` uses a Redis sorted-set for a shared fixed-window counter
-  that is correct across multiple gunicorn workers / nodes. If Redis is unset,
-  unreachable, or the package is missing, it transparently falls back to the
-  in-process limiter (single-process correct). Install with `pip install redis`.
-
-**3. Persistent session registry (`ml_agent/session_store.py`)**
-- Named sessions are now written to a shared registry (Redis → local SQLite via
-  `MLAGENT_SESSIONS_DB_PATH` → memory) remembering the DB connection. After a worker
-  restart / recycling, `_get_agent` transparently re-hydrates the session by
-  re-connecting, so a client's `X-Session-Id` keeps working on any worker that has
-  the registry. TTL controlled by `MLAGENT_SESSION_TTL`.
-
-**4. Repo hygiene**
-- Add these to `.gitignore` (already present): `__pycache__/`, `.venv/`, runtime
-  `.db` / `.log` / model / cache artifacts, `~/.mlagent/`.
+## Production & Scalability
+- **Serving**: `python web_api.py` auto-serves via **waitress** (thread pool); `--debug` forces the dev server. Use `waitress-serve --threads=8 wsgi:app` or `gunicorn -c gunicorn.conf.py wsgi:app` (multi-process).
+- **Scaling**: one session (loaded data + model) per process. Scale horizontally with multiple workers/instances; for parallel multi-session use an `X-Session-Id` header on `/api/connect` (isolated agents, backed by the shared session registry).
+- **Observability**: `/health` (liveness), `/health/ready` (503 until DB connected), `/status` (request metrics, active jobs, sessions). Graceful SIGTERM/SIGINT drain. Optional bearer token + per-IP rate limiting.
+- **Job safety**: UUID job IDs, bounded concurrency, training runs off the state lock, native DB timeouts, durable job store (jobs survive restarts), hard-killable subprocess jobs (`MLAGENT_PROCESS_JOBS=1`), atomic JSON stores, early-stop model search, analysis/target caching.
+- **UI data**: charts/reports are dependency-free client-side SVG; PDF isn't produced but any chart exports as PNG.
 
 ## Project Structure
-
 ```
-├── ml_agent/
-│   ├── __init__.py          # Package exports
-│   ├── agent.py             # Main MLAgent orchestrator
-│   ├── config.py            # Centralized env-driven configuration
-│   ├── logging_utils.py     # Structured logging setup
-│   ├── database.py          # SQL database processing (pooled engine)
-│   ├── model_selector.py    # Automatic model selection
-│   ├── predictor.py         # Prediction engine
-│   ├── analyzer.py          # Data analysis module
-│   ├── preprocessor.py      # Data preprocessing module
-│   ├── llm_advisor.py       # Local LLM advisor (LM Studio)
-│   ├── job_store.py         # Durable SQLite job registry (A5)
-│   ├── ratelimit.py         # Redis-backed (fallback local) rate limiter
-│   ├── session_store.py     # Persistent/shared session registry
-│   ├── ops.py               # Op handlers (thread + subprocess reuse)
-│   ├── workexec.py          # Child-process entrypoints (hard-killable jobs)
-│   └── cli.py               # Command-line interface
-├── web/
-│   └── static/
-│       ├── index.html       # Web dashboard
-│       ├── style.css        # Dashboard styles
-│       └── app.js           # Dashboard JavaScript
-├── web_api.py               # Flask web API server (waitress in production)
-├── wsgi.py                  # WSGI entry point for production servers
-├── gunicorn.conf.py         # Gunicorn config (Linux/macOS multi-process)
-├── main.py                  # CLI entry point
-├── create_sample_db.py      # Sample database generator
-├── demo.py                  # Full workflow demo
-├── requirements.txt         # Dependencies
-└── README.md                # This file
+ml_agent/            orchestrator (agent.py), config.py, logging_utils.py, database.py,
+                     model_selector.py, predictor.py, analyzer.py, preprocessor.py,
+                     llm_advisor.py, job_store.py, ratelimit.py, session_store.py,
+                     ops.py, workexec.py, cli.py, snapshots.py, recipes.py, relational.py,
+                     anomaly.py, model_monitor.py, experiments.py, sql_validation.py
+web/static/          index.html, style.css, app.js (dashboard)
+web_api.py           Flask web API (waitress in production)
+wsgi.py / gunicorn.conf.py   production WSGI entry + config
+main.py / demo.py / create_sample_db.py   CLI entry, demo, sample-DB generator
+requirements.txt     dependencies
 ```

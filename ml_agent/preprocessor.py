@@ -288,15 +288,13 @@ class DataPreprocessor:
         """
         result = df.copy()
 
-        # Apply label encoders
+        # Apply label encoders (vectorized class->index map; unknown -> -1).
         for key, le in self.fitted_transformers.items():
             if key.startswith("label_"):
                 col = key[6:]
                 if col in result.columns:
-                    known = set(le.classes_)
-                    result[col] = result[col].astype(str).map(
-                        lambda v: le.transform([v])[0] if v in known else -1
-                    )
+                    class_map = {str(k): i for i, k in enumerate(le.classes_)}
+                    result[col] = result[col].astype(str).map(class_map).fillna(-1).astype(int)
 
         # Apply scalers
         for key, value in self.fitted_transformers.items():

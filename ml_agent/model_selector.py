@@ -447,14 +447,20 @@ class ModelSelector:
     def _capture_reference(self, X: pd.DataFrame) -> None:
         """Store per-feature "typical" values (median for numeric, mode for
         categorical) as an explanation baseline for what-if / explanations."""
+        num_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c].dtype)]
+        cat_cols = [c for c in X.columns if c not in num_cols]
         ref: Dict[str, Any] = {}
-        for col in X.columns:
-            s = X[col]
-            if pd.api.types.is_numeric_dtype(s.dtype):
-                ref[col] = {"type": "numeric", "value": float(s.median())}
-            else:
-                mode = s.mode()
-                ref[col] = {"type": "categorical", "value": str(mode.iloc[0]) if len(mode) else None}
+        if num_cols:
+            medians = X[num_cols].median().to_dict()
+            for c in num_cols:
+                ref[c] = {"type": "numeric", "value": float(medians[c])}
+        if cat_cols:
+            # mode() returns one row (column name -> modal value); empty lock-step.
+            modes = X[cat_cols].mode()
+            modal = modes.iloc[0] if len(modes) else None
+            for c in cat_cols:
+                val = modal[c] if modal is not None else None
+                ref[c] = {"type": "categorical", "value": str(val) if val is not None else None}
         self.feature_reference = ref
 
     def _tune_best_model(

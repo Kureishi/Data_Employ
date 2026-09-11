@@ -54,19 +54,31 @@ class DataAnalyzer:
 
     def get_column_insights(self) -> List[Dict[str, Any]]:
         """Get insights for each column."""
+        # One vectorized describe()+skew() pass instead of per-column scans.
+        num_cols = [
+            c for c in self.df.columns
+            if pd.api.types.is_numeric_dtype(self.df[c].dtype)
+        ]
+        num_map: Dict[str, Dict[str, float]] = {}
+        if num_cols:
+            desc = self.df[num_cols].describe()
+            skews = self.df[num_cols].skew()
+            for col in num_cols:
+                row = desc[col]
+                num_map[col] = {
+                    "mean": round(float(row["mean"]), 4),
+                    "std": round(float(row["std"]), 4),
+                    "min": round(float(row["min"]), 4),
+                    "max": round(float(row["max"]), 4),
+                    "skew": round(float(skews[col]), 4),
+                }
+
         insights = []
         for col in self.df.columns:
             col_data = self.df[col]
             info = {"column": col, "dtype": str(col_data.dtype), "null_count": int(col_data.isna().sum())}
-
-            if pd.api.types.is_numeric_dtype(col_data.dtype):
-                info.update({
-                    "mean": round(float(col_data.mean()), 4),
-                    "std": round(float(col_data.std()), 4),
-                    "min": round(float(col_data.min()), 4),
-                    "max": round(float(col_data.max()), 4),
-                    "skew": round(float(col_data.skew()), 4),
-                })
+            if col in num_map:
+                info.update(num_map[col])
             else:
                 info.update({
                     "unique_values": int(col_data.nunique()),
