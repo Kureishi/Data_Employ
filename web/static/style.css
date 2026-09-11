@@ -687,6 +687,12 @@ button:disabled {
 .chart {
     margin: 12px 0;
 }
+.chart-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
 .chart-title {
     font-size: 12px;
     font-weight: 600;
@@ -694,6 +700,14 @@ button:disabled {
     text-transform: uppercase;
     letter-spacing: 0.4px;
     margin-bottom: 6px;
+}
+.chart-head .chart-title {
+    margin-bottom: 0;
+}
+.chart-png-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    line-height: 1.4;
 }
 .chart svg {
     display: block;
@@ -767,4 +781,88 @@ button:disabled {
 
 /* Result snapshots & diff */
 #snapshot-list table{width:100%;font-size:13px;}
+
+/* ===== Tier A: analysis charts ===== */
+.heatmap{display:grid;gap:2px;overflow-x:auto;padding:6px 0;min-width:max-content;}
+.hm-label{font-size:10px;color:#6b7280;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px;align-self:center;}
+.hm-cell{min-width:36px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;font-size:10px;color:#111827;font-weight:600;cursor:default;}
+.hm-cell:hover{outline:2px solid rgba(17,24,39,.35);}
+
+.dist-band{min-width:140px;}
+.dist-track{position:relative;height:14px;background:#e5e7eb;border-radius:4px;}
+.dist-one{position:absolute;top:0;height:100%;background:rgba(79,70,229,.28);border-radius:4px;}
+.dist-mean{position:absolute;top:-2px;width:2px;height:18px;background:#4f46e5;border-radius:1px;}
+.dist-ticks{display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;margin-top:2px;}
+
+.cm-table.wide td,.cm-table.wide th{min-width:60px;text-align:center;}
+.cm-table.wide td{font-weight:600;}
+
+/* Charts/tables inside the monospace .data-box should use normal typography */
+.data-box .chart,
+.data-box table.dataframe,
+.data-box .heatmap,
+.data-box .dist-band,
+.data-box .table-container{font-family:inherit;white-space:normal;}
+.data-box .chart-title{font-family:inherit;}
+.data-box .cm-table{font-family:inherit;white-space:normal;}
+
+/* _____ Tier B: printable report & chart export _____ */
+.report-body h1{font-size:22px;color:#111827;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-bottom:12px;}
+.report-body h4{margin:16px 0 6px;color:#374151;}
+.report-body .health-summary{margin:12px 0;}
+.report-body .dataframe{font-size:11px;}
+@media print{
+    .chart-png-btn{display:none;}
+    .report-body{font-size:11px;}
+    a{color:#2563eb;}
+}
+
+/* _____ Tier C: drift bars, anomaly scatter, experiment leaderboard _____ */
+.drift-row{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;}
+.drift-label{width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);}
+.drift-track{flex:1;height:12px;background:#f3f4f6;border-radius:4px;overflow:hidden;}
+.drift-fill{display:block;height:100%;border-radius:4px;}
+.drift-fill.stable{background:#10b981;}
+.drift-fill.moderate{background:#f59e0b;}
+.drift-fill.drift{background:#ef4444;}
+.drift-val{width:52px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);}
+.drift-badge{width:74px;text-align:center;font-size:10px;font-weight:600;border-radius:10px;padding:1px 4px;color:#fff;}
+.drift-badge.stable{background:#10b981;}
+.drift-badge.moderate{background:#f59e0b;}
+.drift-badge.drift{background:#ef4444;}
+.drift-badge.missing{background:#9ca3af;}
+.drift-legend{margin:6px 0 10px;font-size:11px;color:var(--text-light);display:flex;gap:14px;align-items:center;}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;}
+.sw.stable{background:#10b981;}
+.sw.moderate{background:#f59e0b;}
+.sw.drift{background:#ef4444;}
+.sw.anom{background:#ef4444;border-radius:50%;}
+.sw.norm{background:#9ca3af;border-radius:50%;}
+
+.scatter-legend{margin:4px 0 8px;font-size:11px;color:var(--text-light);display:flex;gap:18px;}
+.anom-svg{max-width:100%;height:auto;}
+
+.lb-row{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px;}
+.lb-label{width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);}
+.lb-track{flex:1;height:14px;background:var(--sidebar-bg);border-radius:4px;overflow:hidden;}
+.lb-fill{display:block;height:100%;border-radius:4px;min-width:2px;}
+.lb-val{width:56px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);font-weight:600;}
+tr.ex-champ-row td{background:#fffbeb;}
+
+/* _____ Tier D: quick view, sparklines, contribution bars _____ */
+#quick-view-result{margin-top:6px;}
+.table-item{display:flex;align-items:center;gap:8px;}
+.table-spark{flex:1;min-width:34px;height:20px;display:flex;align-items:center;overflow:hidden;}
+.sparkline{display:block;max-width:100%;}
+
+.contrib-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px;}
+.contrib-label{width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);}
+.contrib-track{flex:1;position:relative;height:14px;background:transparent;}
+.contrib-bar{position:absolute;top:0;height:100%;border-radius:2px;}
+.contrib-bar.neg{right:auto;}
+.contrib-zero{position:absolute;top:0;width:1px;height:100%;background:#d1d5db;}
+.contrib-val{width:60px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
+.contrib-hint{margin:2px 0 8px;font-size:11px;color:var(--text-light);display:flex;gap:18px;}
+.sw.pos{background:#10b981;}
+.sw.neg{background:#ef4444;}
 

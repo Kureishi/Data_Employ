@@ -8,6 +8,40 @@ let currentDataSource = null;
 let lastAnalyzeResult = null;
 let lastPredictions = null;
 let lastPredictColumns = null;
+let lastTrainResult = null;
+
+// ============ Tier D (item 15): persistent dashboard state ============
+const UI_STATE_KEY = 'ml_agent_ui_state';
+function saveUIState() {
+    const els = {
+        analyzeTarget: 'analyze-target', analyzeType: 'analyze-type',
+        dbConnection: 'db-connection', trainTarget: 'train-target',
+    };
+    const s = { tab: currentTab, dataSource: currentDataSource };
+    for (const [k, id] of Object.entries(els)) {
+        const el = document.getElementById(id);
+        if (el) s[k] = el.value;
+    }
+    try { localStorage.setItem(UI_STATE_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
+}
+function loadUIState() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(UI_STATE_KEY) || 'null'); } catch (e) { s = null; }
+    if (!s) return s;
+    if (s.tab && typeof switchTab === 'function') switchTab(s.tab);
+    else currentTab = s.tab || 'data';
+    currentDataSource = s.dataSource || null;
+    const els = {
+        analyzeTarget: 'analyze-target', analyzeType: 'analyze-type',
+        dbConnection: 'db-connection', trainTarget: 'train-target',
+    };
+    for (const [k, id] of Object.entries(els)) {
+        if (!(k in s)) continue;
+        const el = document.getElementById(id);
+        if (el) el.value = s[k];
+    }
+    return s;
+}
 
 // ============ Helpers ============
 
@@ -131,6 +165,7 @@ function switchTab(tab) {
     document.querySelectorAll('.tab-content').forEach(c => {
         c.classList.toggle('active', c.id === `tab-${tab}`);
     });
+    saveUIState(); // Tier D: persist dashboard state
 }
 
 // ============ State refresh ============
@@ -182,6 +217,7 @@ function renderTablesList(tables) {
     list.innerHTML = tables.map(t => `
         <div class="table-item" data-table="${escapeHtml(t)}">
             <span class="table-name">${escapeHtml(t)}</span>
+            <span class="table-spark"></span>
             <span class="table-rows">click to load</span>
         </div>
     `).join('');
@@ -200,12 +236,63 @@ function renderTablesList(tables) {
                 showToast(`Loaded ${res.rows} rows from ${table}`, 'success');
                 await refreshState();
                 await autoSuggestTarget();
+                saveUIState();
+                try { await runQuickView(); } catch (e) { /* best-effort */ }
             } catch (e) {
                 showToast(e.message, 'error');
             }
         });
     });
+    renderSidebarPreviews(tables);
 }
+
+// ============ Tier D (item 16): sidebar sparkline previews ============
+let __sidebarPreviewsLoaded = false;
+function renderSidebarPreviews(tables) {
+    if (__sidebarPreviewsLoaded || !tables || !tables.length) return;
+    __sidebarPreviewsLoaded = true;
+    // Lazy-load a small numeric preview per table (first ~6) to draw a sparkline.
+    tables.slice(0, 6).forEach((t, i) => {
+        setTimeout(async () => {
+            try {
+                const res = await api(`/api/tables/${encodeURIComponent(t)}/preview?limit=40`, 'GET');
+                const rows = res.data || [];
+                const numeric = (res.columns || []).map(c => c.name)
+                    .find(name => rows.length && typeof rows[0][name] === 'number');
+                if (!numeric || !rows.length) return;
+                const el = document.querySelector(`.table-item[data-table="${escapeHtml(t)}"] .table-spark`);
+                if (!el) return;
+                const vmin = Math.min(...rows.map(r => r[numeric])), vmax = Math.max(...rows.map(r => r[numeric]));
+                const span = (vmax > vmin) ? (vmax - vmin) : 1;
+                const pts = rows.slice(0, 40).map((r, idx) => {
+                    const x = idx * 1.4, y = 18 - ((Number(r[numeric]) - vmin) / span) * 14;
+                    return `${x.toFixed(1)},${y.toFixed(1)}`;
+                }).join(' ');
+                el.innerHTML = `<svg width="${(rows.length - 1) * 1.4}" height="20" xmlns="http://www.w3.org/2000/svg" class="sparkline"><polyline points="${pts}" fill="none" stroke="#4f46e5" stroke-width="1.5"/></svg>`;
+            } catch (e) { /* non-fatal */ }
+        }, 250 + i * 150);
+    });
+}
+
+// ============ Tier D (item 13): Quick View ============
+async function runQuickView() {
+    const box = document.getElementById('quick-view-result');
+    if (!box) return;
+    box.innerHTML = '<p class="hint">Running quick view…</p>';
+    try {
+        const target = ((document.getElementById('analyze-target') || {}).value || '').trim() || null;
+        const res = await api('/api/analyze', 'POST', { type: 'summary', target_column: target, use_cache: true });
+        const rep = res.analysis;
+        box.innerHTML = renderSummary(rep);
+        if (res.analysis && res.analysis.basic_stats) {
+            box.innerHTML += `<p class="hint">Source: ${escapeHtml(res.analysis.basic_stats.rows || '')} rows · ${escapeHtml(res.analysis.basic_stats.columns || '')} cols</p>`;
+        }
+    } catch (err) {
+        box.innerHTML = '';
+        showToast(err.message, 'error');
+    }
+}
+document.getElementById('btn-quick-view').addEventListener('click', () => runQuickView());
 
 function populateTableSelect(tables) {
     const select = document.getElementById('data-table-select');
@@ -412,6 +499,206 @@ function downloadCsv(filename, rows) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Generic text/blob download.
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadText(filename, text, mime) {
+    downloadBlob(new Blob([text], { type: mime || 'text/plain;charset=utf-8;' }), filename);
+}
+
+// Serialize an inline <svg> to a downloadable PNG (Tier B item 9).
+async function downloadSvgAsPng(svg, filename) {
+    const clone = svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+    const width = parseFloat(svg.getAttribute('width')) || svg.getBoundingClientRect().width || 600;
+    const height = parseFloat(svg.getAttribute('height')) || svg.getBoundingClientRect().height || 400;
+    clone.setAttribute('width', width);
+    clone.setAttribute('height', height);
+    // Copy any stylesheet rules so colours/fonts resolve in the isolated SVG.
+    const styles = Array.from(document.styleSheets)
+        .map(s => { try { return Array.from(s.cssRules).map(r => r.cssText).join('\n'); } catch (e) { return ''; } })
+        .join('\n');
+    const styleEl = document.createElement('style');
+    styleEl.textContent = styles;
+    clone.insertBefore(styleEl, clone.firstChild);
+
+    const xml = new XMLSerializer().serializeToString(clone);
+    const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+
+    try {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+            img.src = svgDataUrl;
+        });
+        const scale = Math.min(2, Math.max(1, 3000 / Math.max(width, height))); // up to 2x for crispness
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(width * scale);
+        canvas.height = Math.round(height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(b => { if (b) downloadBlob(b, filename); }, 'image/png');
+    } catch (e) {
+        // Fallback: download the raw SVG if PNG rasterisation fails.
+        downloadBlob(new Blob([xml], { type: 'image/svg+xml;charset=utf-8;' }), (filename || 'chart.png').replace(/\.png$/i, '.svg'));
+    }
+}
+
+// ============ Export helpers (Tier B: reports & markdown) ============
+
+function renderSummaryToReport(report, target) {
+    // Build a compact, printable body from an analysis summary.
+    const b = report.basic_stats || {};
+    const meta = `<div class="health-summary">` +
+        `<div class="health-card"><div class="cell-label">Rows</div><div class="cell-value">${b.rows}</div></div>` +
+        `<div class="health-card"><div class="cell-label">Columns</div><div class="cell-value">${b.columns}</div></div>` +
+        `<div class="health-card"><div class="cell-label">Missing</div><div class="cell-value">${b.missing_values}</div></div>` +
+        `<div class="health-card"><div class="cell-label">Duplicates</div><div class="cell-value">${b.duplicate_rows}</div></div>` +
+        (target ? `<div class="health-card"><div class="cell-label">Target</div><div class="cell-value">${escapeHtml(target)}</div></div>` : '') +
+        `</div>`;
+    return meta + renderCorrelations(report.correlations) +
+        (report.column_insights && report.column_insights.length ? '<h4>Column Insights</h4>' + renderInsights(report.column_insights) : '') +
+        (report.target_analysis && !report.target_analysis.error ? '<h4>Target Analysis</h4>' + renderTargetAnalysis(report.target_analysis) : '');
+}
+
+// Data-rich HTML tables useful in a shareable report / Markdown export.
+function metricsToHtmlTable(metrics) {
+    if (!metrics || !Object.keys(metrics).length) return '';
+    const rows = Object.entries(metrics).map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${formatJson(v)}</td></tr>`).join('');
+    return '<div class="table-container"><table class="dataframe"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function markdownTable(headers, rows) {
+    const h = '| ' + headers.join(' | ') + ' |';
+    const sep = '| ' + headers.map(() => '---').join(' | ') + ' |';
+    const body = rows.map(r => '| ' + headers.map((_, i) => r[i] !== undefined && r[i] !== null ? String(r[i]) : '').join(' | ') + ' |').join('\n');
+    return h + '\n' + sep + '\n' + body;
+}
+
+// Render the current training result as a shareable Markdown document (Tier B item 8).
+function trainResultsToMarkdown(t) {
+    if (!t) return '';
+    const md = [];
+    md.push('# Training Report');
+    md.push('');
+    md.push(`- **Task type**: ${t.task_type || 'N/A'}`);
+    md.push(`- **Best model**: ${t.best_model || 'N/A'}`);
+    md.push(`- **CV score**: ${formatJson(t.best_cv_score)}`);
+    if (t.target_column) md.push(`- **Target column**: ${t.target_column}`);
+    if (t.tuning && t.tuning !== 'off') md.push(`- **Tuning**: ${t.tuning}`);
+
+    if (t.test_metrics && Object.keys(t.test_metrics).length) {
+        md.push('');
+        md.push('## Test Metrics');
+        md.push('');
+        md.push(markdownTable(['Metric', 'Value'], Object.entries(t.test_metrics).map(([k, v]) => [k, formatJson(v)])));
+    }
+
+    if (t.model_scores && Object.keys(t.model_scores).length) {
+        md.push('');
+        md.push('## Candidate Model Scores');
+        md.push('');
+        const entries = Object.entries(t.model_scores).sort((a, b) => b[1] - a[1]);
+        md.push(markdownTable(['Model', 'CV Score'], entries.map(([k, v]) => [k, formatJson(v)])));
+    }
+
+    if (t.feature_importance && t.feature_importance.length) {
+        md.push('');
+        md.push('## Top Feature Importances');
+        md.push('');
+        md.push(markdownTable(['Feature', 'Importance'], t.feature_importance.slice(0, 10).map(fi => [fi.feature, formatJson(fi.importance)])));
+    }
+
+    if (t.tuning && t.tuning !== 'off' && t.best_params && Object.keys(t.best_params).length) {
+        md.push('');
+        md.push('## Best Hyperparameters');
+        md.push('');
+        md.push('```json');
+        md.push(JSON.stringify(t.best_params, null, 2));
+        md.push('```');
+    }
+    return md.join('\n') + '\n';
+}
+
+// Assemble a self-contained, shareable HTML analysis report (Tier B item 7).
+async function exportHtmlReport() {
+    const targetEl = document.getElementById('analyze-target');
+    const target = targetEl ? (targetEl.value.trim() || null) : null;
+    let report;
+    try {
+        const res = await api('/api/analyze', 'POST', { type: 'summary', target_column: target, use_cache: true });
+        report = res.analysis;
+        // Also surface the same view in the Analyze tab so the user sees what's exported.
+        const out = document.getElementById('analyze-result');
+        if (out) out.innerHTML = renderSummary(report);
+        if (lastAnalyzeResult === null) lastAnalyzeResult = report;
+    } catch (err) {
+        showToast('Could not generate report: ' + err.message, 'error');
+        return;
+    }
+
+    const body = renderSummaryToReport(report, target);
+    let css = '';
+    try { css = await (await fetch('/static/style.css')).text(); } catch (e) { css = ''; }
+    const stamp = new Date().toLocaleString();
+    const source = (report.basic_stats && report.basic_stats.source) ? report.basic_stats.source : '';
+    const filename = 'ml-agent-analysis-report.html';
+    const doc = '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+        '<title>ML Agent — Analysis Report</title>' +
+        '<style>html{max-width:980px;margin:0 auto;padding:24px;}@media print{body{padding:0}}' + css + '</style>' +
+        '</head><body class="report-body">' +
+        `<h1>Data Analysis Report</h1>` +
+        `<p class="hint">Generated ${escapeHtml(stamp)} ${source ? '· Source: ' + escapeHtml(source) : ''}</p>` +
+        body + '</body></html>';
+    downloadBlob(new Blob([doc], { type: 'text/html;charset=utf-8;' }), filename);
+}
+
+// Delegated handler: any .chart-png-btn downloads the sibling SVG as PNG (Item 9).
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.chart-png-btn');
+    if (!btn) return;
+    const chart = btn.closest('.chart');
+    const svg = chart && chart.querySelector('svg');
+    if (!svg) return;
+    const fname = svg.getAttribute('data-filename') || 'chart.png';
+    downloadSvgAsPng(svg, fname).catch(() => showToast('Chart download failed.', 'error'));
+});
+
+document.getElementById('btn-export-train-md').addEventListener('click', () => {
+    if (!lastTrainResult) {
+        showToast('No training results to export yet. Train a model first.', 'warning');
+        return;
+    }
+    downloadText('training-report.md', trainResultsToMarkdown(lastTrainResult), 'text/markdown;charset=utf-8;');
+    showToast('Training report exported as Markdown.', 'success');
+});
+
+document.getElementById('btn-export-report').addEventListener('click', async (e) => {
+    const _b = e.currentTarget; setLoading(_b, true);
+    try {
+        await exportHtmlReport();
+        showToast('Analysis report exported as HTML.', 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        setLoading(_b, false);
+    }
+});
+
 function svgBarChart(items, opts) {
     opts = opts || {};
     if (!items || items.length === 0) return '';
@@ -439,25 +726,31 @@ function svgBarChart(items, opts) {
         bars += `<text x="${x + Math.max(w, 2) + 4}" y="${y + barH - 4}" font-size="11" fill="#1f2937">${formatJson(it.value)}</text>`;
     });
 
-    return `<div class="chart"><div class="chart-title">${escapeHtml(opts.title || '')}</div>
-            <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${bars}</svg></div>`;
+    const fname = opts.filename || 'chart.png';
+    return `<div class="chart"><div class="chart-head"><div class="chart-title">${escapeHtml(opts.title || '')}</div>` +
+        `<button type="button" class="btn btn-outline btn-sm chart-png-btn" title="Download this chart as PNG">⤓ PNG</button></div>` +
+        `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" data-filename="${escapeHtml(fname)}">${bars}</svg></div>`;
 }
 
 function renderConfusionMatrix(cm, classLabels) {
     if (!cm || !cm.length) return '';
     const n = cm.length;
-    const labels = classLabels || cm.map((_, i) => i);
-    let html = '<h4>Confusion Matrix</h4><table class="cm-table"><tr><th></th>';
-    for (const l of labels) html += `<th>Pred ${escapeHtml(String(l))}</th>`;
-    html += '</tr>';
+    const labels = classLabels || Array.from({ length: n }, (_, i) => i);
+    let mx = 0;
+    for (const row of cm) for (const v of row) mx = Math.max(mx, v || 0);
+    let html = '<h4>Confusion Matrix</h4><div class="table-container"><table class="cm-table wide">';
+    html += '<tr><th></th>' + labels.map(l => `<th>Pred ${escapeHtml(String(l))}</th>`).join('') + '</tr>';
     for (let i = 0; i < n; i++) {
         html += `<tr><th>Act ${escapeHtml(String(labels[i]))}</th>`;
         for (let j = 0; j < n; j++) {
-            html += `<td>${cm[i][j]}</td>`;
+            const v = cm[i][j] || 0;
+            const a = mx ? v / mx : 0;
+            const bg = 'rgba(16,185,129,' + (a * 0.88 + 0.07).toFixed(3) + ')';
+            html += `<td style="background:${bg}">${v}</td>`;
         }
         html += '</tr>';
     }
-    html += '</table>';
+    html += '</table></div>';
     return html;
 }
 
@@ -559,7 +852,135 @@ function renderHealthReport(h) {
     return html;
 }
 
-// ============ Render helpers: SQL validation / anomaly / explain / drift ============
+// ============ Tier A: SVG-based analysis charts ============
+
+// Diverging color (red = +, blue = -) for a correlation value in [-1, 1].
+function corrFill(v) {
+    const a = Math.min(1, Math.abs(v || 0));
+    if (v >= 0) {
+        return 'rgba(220,38,38,' + (a * 0.85 + 0.12).toFixed(3) + ')';
+    }
+    return 'rgba(37,99,235,' + (a * 0.85 + 0.12).toFixed(3) + ')';
+}
+
+// Correlation heatmap from {col: {col: value}}.
+function renderCorrelations(corr) {
+    if (!corr) return '';
+    if (corr.error) return `<p class="hint">${escapeHtml(corr.error)}</p>`;
+    const cols = Object.keys(corr);
+    if (cols.length < 2) return renderJson(corr);
+    let html = '<div class="chart"><div class="chart-title">Correlation Heatmap</div>';
+    html += '<div class="heatmap" style="grid-template-columns:auto repeat(' + cols.length + ', minmax(36px,1fr))">';
+    html += '<div></div>';
+    for (const c of cols) html += `<div class="hm-label">${escapeHtml(c)}</div>`;
+    for (const c of cols) {
+        html += `<div class="hm-label">${escapeHtml(c)}</div>`;
+        for (const c2 of cols) {
+            const v = (corr[c] && corr[c][c2] !== undefined) ? corr[c][c2] : 0;
+            html += `<div class="hm-cell" style="background:${corrFill(v)}" title="${escapeHtml(c)} vs ${escapeHtml(c2)}: ${v}">${formatJson(v)}</div>`;
+        }
+    }
+    html += '</div></div>';
+    return html;
+}
+
+// Horizontal mini distribution band for a numeric column's min/mean/±1σ/max.
+function distBand(info) {
+    if (info == null || info.min == null || info.max == null || info.min === info.max) return '';
+    const min = info.min, max = info.max, mean = info.mean, std = info.std || 0;
+    const range = max - min;
+    const p = (x) => ((x - min) / range * 100).toFixed(1);
+    const lo = Math.min(max, Math.max(min, mean - std));
+    const hi = Math.max(min, Math.min(max, mean + std));
+    const w = Math.max(0, p(hi) - p(lo));
+    return `<div class="dist-band"><div class="dist-track"><div class="dist-one" style="left:${p(lo)}%;width:${w}%"></div>` +
+        `<div class="dist-mean" style="left:${p(mean)}%"></div></div>` +
+        `<div class="dist-ticks"><span>${formatJson(min)}</span><span>${formatJson(mean)}</span><span>${formatJson(max)}</span></div></div>`;
+}
+
+
+
+// Column insights: numeric -> distribution band + stats; categorical -> top-value bars.
+function renderInsights(insights) {
+    if (!insights || !insights.length) return '';
+    let html = '<div class="chart"><div class="chart-title">Column Insights</div>';
+    html += '<div class="table-container"><table class="dataframe"><thead><tr>' +
+        '<th>Column</th><th>Type</th><th>Null</th><th>Distribution / Top Values</th><th>Stats</th></tr></thead><tbody>';
+    for (const c of insights) {
+        let vis = '<span class="hint">—</span>';
+        let stats = '';
+        if (c.mean !== undefined) {
+            vis = distBand(c);
+            stats = 'μ ' + formatJson(c.mean) + ' · σ ' + formatJson(c.std) + ' · skew ' + formatJson(c.skew);
+        } else if (c.top_values && Object.keys(c.top_values).length) {
+            vis = svgBarChart(Object.entries(c.top_values).map(([k, v]) => ({ label: k, value: v })),
+                { color: '#6366f1' });
+            stats = c.unique_values + ' unique';
+        } else {
+            stats = (c.unique_values != null ? c.unique_values : '?') + ' unique';
+        }
+        html += `<tr><td>${escapeHtml(c.column)}</td><td>${escapeHtml(c.dtype)}</td><td>${c.null_count}</td><td>${vis}</td><td class="hint">${stats}</td></tr>`;
+    }
+    html += '</tbody></table></div></div>';
+    return html;
+}
+
+function renderDistCard(d) {
+    if (!d || d.min == null) return '';
+    let html = '<div class="health-summary">';
+    for (const k of ['mean', 'median', 'std', 'min', 'max', 'skew']) {
+        if (d[k] !== undefined) {
+            html += `<div class="health-card"><div class="cell-label">${escapeHtml(k)}</div><div class="cell-value">${formatJson(d[k])}</div></div>`;
+        }
+    }
+    html += '</div>';
+    return html + distBand(d);
+}
+
+// Target analysis: numeric distribution band OR categorical value bars, plus
+// correlation-with-target horizontal bars.
+function renderTargetAnalysis(ta) {
+    if (!ta) return '';
+    if (ta.error) return `<p class="hint">${escapeHtml(ta.error)}</p>`;
+    let html = `<strong>Target:</strong> ${escapeHtml(ta.target_column)} <span class="hint">(${escapeHtml(ta.dtype)}; ${ta.null_count} null)</span><br>`;
+    const d = ta.distribution || {};
+    if (d.min !== undefined && d.max !== undefined) {
+        html += renderDistCard(d);
+    } else if (typeof d === 'object' && Object.keys(d).length) {
+        html += svgBarChart(Object.entries(d).map(([k, v]) => ({ label: k, value: v })),
+            { title: 'Target Class Distribution', color: '#8b5cf6' });
+        if (ta.unique_classes !== undefined) html += '<p class="hint">' + ta.unique_classes + ' unique classes</p>';
+    }
+    const corr = ta.correlations_with_numeric_features;
+    if (corr && Object.keys(corr).length) {
+        const items = Object.entries(corr)
+            .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+            .slice(0, 12)
+            .map(([k, v]) => ({ label: k, value: v }));
+        html += svgBarChart(items, { title: 'Correlation with Target', color: '#0ea5e9' });
+    }
+    return html;
+}
+
+// Summary: stat cards + correlation heatmap + column insights + target analysis.
+function renderSummary(s) {
+    if (!s) return '';
+    const b = s.basic_stats || {};
+    const num = (b.numeric_columns || []).length;
+    const cat = (b.categorical_columns || []).length;
+    let html = '<div class="health-summary">';
+    html += `<div class="health-card"><div class="cell-label">Rows</div><div class="cell-value">${b.rows}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Columns</div><div class="cell-value">${b.columns}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Numeric</div><div class="cell-value">${num}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Categorical</div><div class="cell-value">${cat}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Missing</div><div class="cell-value">${b.missing_values}</div></div>`;
+    html += `<div class="health-card"><div class="cell-label">Duplicates</div><div class="cell-value">${b.duplicate_rows}</div></div>`;
+    html += '</div>';
+    if (s.correlations && !s.correlations.error) html += renderCorrelations(s.correlations);
+    if (s.column_insights && s.column_insights.length) html += '<h4>Column Insights</h4>' + renderInsights(s.column_insights);
+    if (s.target_analysis && !s.target_analysis.error) html += '<h4>Target Analysis</h4>' + renderTargetAnalysis(s.target_analysis);
+    return html;
+}
 
 function renderValidation(v) {
     if (!v) return '';
@@ -580,8 +1001,54 @@ function renderValidation(v) {
     return h;
 }
 
+function renderAnomalyScatter(an, xf, yf) {
+    if (!an) return '';
+    const feats = an.features || [];
+    if (feats.length < 2) return '<p class="hint">Need at least 2 numeric features to plot a scatter view.</p>';
+    xf = xf || feats[0]; yf = yf || feats[1];
+    const flagCol = (an.summary && an.summary.flag_column) || 'is_anomaly';
+    const pts = (an.data || [])
+        .filter(r => r[xf] != null && r[yf] != null && !isNaN(Number(r[xf])) && !isNaN(Number(r[yf])))
+        .map(r => ({ x: Number(r[xf]), y: Number(r[yf]), flag: !!r[flagCol] }));
+    if (!pts.length) return '<p class="hint">No plottable rows for the selected features.</p>';
+    const W = 470, H = 280, P = { l: 52, r: 12, t: 12, b: 32 };
+    const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const xsp = (xmax > xmin) ? (xmax - xmin) : 1;
+    const ysp = (ymax > ymin) ? (ymax - ymin) : 1;
+    const sx = v => P.l + ((v - xmin) / xsp) * (W - P.l - P.r);
+    const sy = v => P.t + (1 - (v - ymin) / ysp) * (H - P.t - P.b);
+    const nAnom = pts.filter(p => p.flag).length;
+
+    let body = `<line x1="${P.l}" y1="${H - P.b}" x2="${W - P.r}" y2="${H - P.b}" stroke="#d1d5db"/>` +
+        `<line x1="${P.l}" y1="${P.t}" x2="${P.l}" y2="${H - P.b}" stroke="#d1d5db"/>`;
+    for (const p of pts) {
+        body += `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${p.flag ? 4.5 : 2.5}" ` +
+            `fill="${p.flag ? '#ef4444' : '#9ca3af'}" opacity="${p.flag ? 0.95 : 0.55}" ` +
+            `title="${p.flag ? 'Anomaly' : 'Normal'} — ${escapeHtml(xf)}=${formatJson(p.x)}, ${escapeHtml(yf)}=${formatJson(p.y)}"/>`;
+    }
+    // Axis labels + min/max ticks
+    body += `<text x="${P.l + (W - P.l - P.r) / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="#6b7280">${escapeHtml(xf)}</text>`;
+    body += `<text x="14" y="${P.t + (H - P.t - P.b) / 2}" text-anchor="middle" font-size="11" fill="#6b7280" transform="rotate(-90 14 ${P.t + (H - P.t - P.b) / 2})">${escapeHtml(yf)}</text>`;
+    const legend = `<div class="scatter-legend"><span class="sw anom"></span>Anomaly (${nAnom}) <span class="sw norm"></span>Normal (${pts.length - nAnom})</div>`;
+    return `<div class="chart"><div class="chart-title">Anomaly Scatter — ${escapeHtml(xf)} × ${escapeHtml(yf)}</div>${legend}` +
+        `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" class="anom-svg">${body}</svg></div>`;
+}
+
+// Re-plot the anomaly scatter into its container using the selected features.
+function plotAnomaly() {
+    const an = window.__lastAnomaly;
+    const box = document.getElementById('anom-scatter');
+    if (!an || !box) return;
+    const xf = (document.getElementById('anom-x') || {}).value;
+    const yf = (document.getElementById('anom-y') || {}).value;
+    box.innerHTML = renderAnomalyScatter(an, xf, yf);
+}
+
 function renderAnomaly(an) {
     if (!an) return '';
+    window.__lastAnomaly = an;
     let html = `<div class="health-summary">`;
     html += `<div class="health-card"><div class="cell-label">Rows</div><div class="cell-value">${an.total}</div></div>`;
     html += `<div class="health-card"><div class="cell-label">Anomalies</div><div class="cell-value">${an.n_anomalies}</div></div>`;
@@ -594,6 +1061,17 @@ function renderAnomaly(an) {
             { title: 'Anomaly Feature Importance', color: '#ef4444' });
     }
 
+    // Scatter/outlier view (Item 11): feature picker + canvas.
+    const feats = an.features || [];
+    if (feats.length >= 2) {
+        const opts = (sel) => feats.map(f => `<option value="${escapeHtml(f)}" ${f === sel ? 'selected' : ''}>${escapeHtml(f)}</option>`).join('');
+        html += '<div class="chart"><div class="chart-title">Outlier Scatter View</div><div class="form-row" style="margin-bottom:6px">' +
+            `<label>X <select id="anom-x" onchange="plotAnomaly()">${opts(feats[0])}</select></label>` +
+            `<label>Y <select id="anom-y" onchange="plotAnomaly()">${opts(feats[1] || feats[0])}</select></label></div>` +
+            '<div id="anom-scatter"></div></div>';
+        setTimeout(() => plotAnomaly(), 0);
+    }
+
     const data = an.data || [];
     html += `<p class="hint">Flagged via the ${escapeHtml((an.summary.flag_column || 'is_anomaly'))} column (${an.n_anomalies} rows)</p>`;
     const cols = an.features.concat([an.summary.score_column, an.summary.flag_column]);
@@ -601,11 +1079,36 @@ function renderAnomaly(an) {
     return html;
 }
 
+// SHAP-style diverging bars: positive pushes prediction up, negative down. (Tier D item 14)
+function renderContributionBars(contributions) {
+    if (!contributions || !contributions.length) return '';
+    const maxAbs = Math.max(...contributions.map(c => Math.abs(c.contribution || 0))) || 1;
+    const halfW = 220;
+    let rows = '';
+    for (const c of contributions) {
+        const v = c.contribution || 0;
+        const w = Math.min(halfW, Math.abs(v) / maxAbs * halfW);
+        const neg = v < 0;
+        const start = neg ? 50 : 50 + (halfW - w);
+        const fill = neg ? '#ef4444' : '#10b981';
+        rows += `<div class="contrib-row" title="Contribution ${formatJson(v)}">` +
+            `<span class="contrib-label">${escapeHtml(c.feature)}</span>` +
+            `<span class="contrib-track">` +
+            `<span class="contrib-bar ${neg ? 'neg' : 'pos'}" style="left:${start}px;width:${w}px;background:${fill}"></span>` +
+            `<span class="contrib-zero" style="left:50px"></span></span>` +
+            `<span class="contrib-val">${v > 0 ? '+' : ''}${formatJson(v)}</span></div>`;
+    }
+    return `<div class="chart"><div class="chart-title">Feature Contributions (diverging)</div>` +
+        `<div class="contrib-hint"><span class="sw pos"></span>Pushes up <span class="sw neg"></span>Pushes down</div>${rows}</div>`;
+}
+
 function renderExplain(ex) {
     if (!ex) return '';
     let html = `<strong>${escapeHtml(ex.best_model)}</strong> — prediction: <strong>${escapeHtml(formatJson(ex.prediction))}</strong><br>`;
     html += `<p class="hint">Base <code>${escapeHtml(ex.target_column)}</code> = ${escapeHtml(formatJson(ex.base_prediction))}</p>`;
     if (ex.contributions && ex.contributions.length) {
+        const sorted = ex.contributions.slice().sort((a, b) => Math.abs(b.contribution || 0) - Math.abs(a.contribution || 0));
+        html += renderContributionBars(sorted.slice(0, 12));
         html += '<h4>Feature contributions (higher = pushes prediction up)</h4><div class="table-container"><table class="dataframe"><thead><tr><th>Feature</th><th>Kind</th><th>Value</th><th>Typical</th><th>Contribution</th></tr></thead><tbody>';
         for (const c of ex.contributions) {
             html += `<tr><td>${escapeHtml(c.feature)}</td><td>${escapeHtml(c.kind || '')}</td><td>${escapeHtml(formatJson(c.value))}</td><td>${escapeHtml(formatJson(c.typical))}</td><td>${escapeHtml(formatJson(c.contribution))}</td></tr>`;
@@ -615,12 +1118,49 @@ function renderExplain(ex) {
     return html;
 }
 
+// Explain a single prediction row (from a batch or typed JSON) into the viewer.
+async function explainPredictRow(row) {
+    if (!row) { showToast('No row to explain.', 'warning'); return; }
+    const box = document.getElementById('predict-explain-result');
+    if (box) box.innerHTML = '<p class="hint">Explaining…</p>';
+    try {
+        const res = await api('/api/explain/prediction', 'POST', { data: row, top_n: 8 });
+        if (box) box.innerHTML = renderExplain(res.explanation);
+        else document.getElementById('explain-result').innerHTML = renderExplain(res.explanation);
+    } catch (err) {
+        showToast(err.message, 'error');
+        if (box) box.innerHTML = '';
+    }
+}
+
 function renderWhatIf(wi) {
     if (!wi) return '';
     const arrow = wi.changed ? '→' : '=';
     return `<strong>What-if: ${escapeHtml(wi.feature)} = ${escapeHtml(formatJson(wi.value))}</strong><br>` +
         `<p>Base prediction: <code>${escapeHtml(formatJson(wi.base_prediction_label))}</code> ${arrow} New: <code>${escapeHtml(formatJson(wi.new_prediction_label))}</code></p>` +
         `<p class="hint">${wi.changed ? 'The prediction changed.' : 'The prediction did not change.'}</p>`;
+}
+
+function renderPsiBars(features, maxPsi) {
+    const items = (features || []).filter(f => f.psi != null).sort((a, b) => (b.psi || 0) - (a.psi || 0));
+    if (!items.length) return '';
+    const max = maxPsi || Math.max(...items.map(f => f.psi)) || 1;
+    const cap = max || 1;
+    let rows = '';
+    for (const f of items) {
+        const statusCls = f.status === 'drift' ? 'drift' : (f.status === 'moderate' ? 'moderate' : 'stable');
+        const pct = Math.min(100, Math.round((f.psi / (cap || 1)) * 100));
+        rows += `<div class="drift-row" title="PSI ${f.psi} — ${escapeHtml(f.status)}${f.message ? ' · ' + escapeHtml(f.message) : ''}">` +
+            `<span class="drift-label">${escapeHtml(f.feature)}</span>` +
+            `<span class="drift-track"><span class="drift-fill ${statusCls}" style="width:${pct}%"></span></span>` +
+            `<span class="drift-val">${f.psi != null ? formatJson(f.psi) : '-'}</span>` +
+            `<span class="drift-badge ${statusCls}">${escapeHtml(f.status)}</span></div>`;
+    }
+    return `<div class="chart"><div class="chart-title">PSI Distribution Shift by Feature</div>` +
+        `<div class="drift-legend"><span class="sw stable"></span>Stable &lt; 0.1` +
+        `<span class="sw moderate"></span>0.1–0.25` +
+        `<span class="sw drift"></span>&gt; 0.25</div>` +
+        rows + '</div>';
 }
 
 function renderDrift(dr) {
@@ -632,6 +1172,7 @@ function renderDrift(dr) {
     html += `<div class="health-card"><div class="cell-label">Max PSI</div><div class="cell-value">${formatJson(dr.max_psi)}</div></div>`;
     html += '</div>';
     html += `<p class="hint">Reference: ${dr.rows_reference} rows vs live: ${dr.rows_live} rows. PSI &gt; ${dr.drift_threshold} = drift, ${dr.moderate_threshold}–${dr.drift_threshold} = moderate.</p>`;
+    html += renderPsiBars(dr.features, dr.max_psi);
     html += '<div class="table-container"><table class="dataframe"><thead><tr><th>Feature</th><th>PSI</th><th>Status</th><th>Message</th></tr></thead><tbody>';
     for (const f of dr.features) {
         const cls = f.status === 'drift' ? 'var(--danger)' : (f.status === 'moderate' ? 'var(--warning)' : '');
@@ -721,6 +1262,8 @@ document.getElementById('btn-load-table').addEventListener('click', async (e) =>
         showToast(`Loaded ${res.rows} rows from ${table}`, 'success');
         await refreshState();
         await autoSuggestTarget();
+        saveUIState();
+        try { await runQuickView(); } catch (e) { /* Quiet View Auto is best-effort */ }
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
@@ -900,6 +1443,14 @@ document.getElementById('btn-analyze').addEventListener('click', async (e) => {
         const out = document.getElementById('analyze-result');
         if (type === 'health') {
             out.innerHTML = renderHealthReport(res.analysis);
+        } else if (type === 'correlations') {
+            out.innerHTML = renderCorrelations(res.analysis);
+        } else if (type === 'insights') {
+            out.innerHTML = renderInsights(res.analysis);
+        } else if (type === 'target') {
+            out.innerHTML = renderTargetAnalysis(res.analysis);
+        } else if (type === 'summary') {
+            out.innerHTML = renderSummary(res.analysis);
         } else {
             out.innerHTML = renderJson(res.analysis);
         }
@@ -1013,6 +1564,7 @@ async function startTraining(target, taskType, tuning, nJobs) {
             trainPoller = null;
             setLoading(_btn, false);
             document.getElementById('train-result').innerHTML = renderTrainResults(status.training);
+            lastTrainResult = status.training;
             showToast(`Trained ${status.training.best_model} (${status.training.task_type})`, 'success');
             await refreshState();
         } else if (status.status === 'error') {
@@ -1048,10 +1600,37 @@ function renderPredictions(res, containerId, filenameBase) {
     lastPredictions = res.predictions;
     lastPredictColumns = res.columns;
     const box = document.getElementById(containerId);
-    box.innerHTML = renderTable(res.predictions, res.columns) +
-        `<p class="hint">${res.rows} prediction(s). Use "Export Predictions (CSV)" below to download.</p>`;
+    window._lastPredictRows = res.predictions;
+    let html = renderPredictRowsWithExplain(res.predictions, res.columns);
+    html += `<p class="hint">${res.rows} prediction(s). Use "Export Predictions (CSV)" below to download. Click "Explain" on a row to see what drives that prediction.</p>`;
+    box.innerHTML = html;
     window._lastPredictFilename = filenameBase;
 }
+
+// Render a prediction table with a per-row "Explain" column (Tier D item 14).
+function renderPredictRowsWithExplain(data, columns) {
+    if (!data || data.length === 0) return '<p class="hint">No data to display.</p>';
+    const cols = columns || Object.keys(data[0]);
+    let html = '<table class="dataframe"><thead><tr>' +
+        cols.map(c => `<th>${escapeHtml(c)}</th>`).join('') +
+        '<th></th></tr></thead><tbody>';
+    data.forEach((row, i) => {
+        html += '<tr>' + cols.map(c => `<td>${escapeHtml(formatJson(row[c]))}</td>`).join('') +
+            `<td><button class="btn btn-outline btn-sm js-explain-row" data-idx="${i}" title="Explain this prediction">Explain</button></td></tr>`;
+    });
+    html += '</tbody></table>';
+    return html;
+}
+
+// Delegated handler: per-row Explain button in prediction tables.
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.js-explain-row');
+    if (!btn) return;
+    const rows = window._lastPredictRows || [];
+    const row = rows[parseInt(btn.dataset.idx, 10)];
+    if (!row) return;
+    explainPredictRow(row);
+});
 
 document.getElementById('btn-predict').addEventListener('click', async (e) => {
     const dataText = document.getElementById('predict-data').value.trim();
@@ -1468,6 +2047,13 @@ document.getElementById('btn-explain-pred').addEventListener('click', async (e) 
     finally { setLoading(_b, false); }
 });
 
+// Explain the first row of the last prediction batch (Tier D productivity).
+document.getElementById('btn-explain-first').addEventListener('click', async () => {
+    const rows = window._lastPredictRows || [];
+    if (!rows.length) { showToast('No prediction batch to explain yet. Run predictions first.', 'warning'); return; }
+    await explainPredictRow(rows[0]);
+});
+
 document.getElementById('btn-whatif').addEventListener('click', async (e) => {
     const dataText = document.getElementById('explain-data').value.trim();
     const feature = document.getElementById('whatif-feature').value.trim();
@@ -1572,19 +2158,46 @@ document.getElementById('btn-synthesize').addEventListener('click',async e=>{con
     document.getElementById('deepfeat-result').innerHTML=h+renderTable(res.data||[],res.columns);}catch(err){showToast(err.message,'error');}finally{setLoading(_b,false);}});
 
 // ----- Schema tab: experiments & champion -----
+function fmtEpoch(ts) {
+    if (!ts) return '';
+    try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return ''; }
+}
+
+// Leaderboard bars for experiments with a CV score, champion highlighted (Item 12).
+function renderExperimentLeaderboard(ex, champId) {
+    const scored = (ex || []).filter(x => x.best_cv_score != null);
+    if (!scored.length) return '';
+    const max = Math.max(...scored.map(x => x.best_cv_score)) || 1;
+    const items = scored.slice().sort((a, b) => b.best_cv_score - a.best_cv_score).slice(0, 10);
+    let html = '<div class="chart"><div class="chart-title">Model Leaderboard (CV Score)</div>';
+    for (const it of items) {
+        const isChamp = champId && it.id === champId;
+        const pct = Math.max(2, (it.best_cv_score / max) * 100);
+        const color = isChamp ? '#f59e0b' : '#4f46e5';
+        html += `<div class="lb-row" title="${escapeHtml((it.target_column || '') + ' · ' + (it.best_model || ''))} | ${formatJson(it.best_cv_score)}">` +
+            `<span class="lb-label">${isChamp ? '⭐ ' : ''}${escapeHtml(it.best_model || '-')} <span class="hint">(${escapeHtml(it.target_column || '-')})</span></span>` +
+            `<span class="lb-track"><span class="lb-fill" style="width:${pct.toFixed(1)}%;background:${color}"></span></span>` +
+            `<span class="lb-val">${formatJson(it.best_cv_score)}</span></div>`;
+    }
+    return html + '</div>';
+}
+
 async function refreshExperiments() {
   try {
     const res = await api('/api/experiments');
     const ex = res.experiments || [];
     const el = document.getElementById('experiments-list');
     const champ = (await api('/api/experiments/champion')).champion;
+    const champId = champ ? champ.id : null;
     document.getElementById('btn-rollback-champion').style.display = champ ? '' : 'none';
     document.getElementById('champion-label').textContent = champ
       ? `Champion: ${champ.best_model} (${champ.target_column}) — ${champ.best_cv_score != null ? 'CV ' + champ.best_cv_score.toFixed(4) : ''}`
       : 'No champion set — click Promote on a run to auto-select the best.';
     if (!ex.length) { el.innerHTML = '<p class="hint">No experiments yet. Train a model to record one.</p>'; return; }
-    el.innerHTML = '<div class="table-container"><table class="dataframe"><thead><tr><th>Target</th><th>Model</th><th>CV</th><th>Status</th><th></th></tr></thead><tbody>' +
-      ex.map(x => `<tr><td>${escapeHtml(x.target_column || '')}</td><td>${escapeHtml(x.best_model || '-')}</td><td>${x.best_cv_score != null ? x.best_cv_score.toFixed(4) : '-'}</td><td>${escapeHtml(x.status)}</td>` +
+    el.innerHTML = renderExperimentLeaderboard(ex, champId);
+    el.innerHTML += '<div class="table-container"><table class="dataframe"><thead><tr><th>Run</th><th>Target</th><th>Model</th><th>CV</th><th>Status</th><th></th></tr></thead><tbody>' +
+      ex.map(x => `<tr class="${champId && x.id === champId ? 'ex-champ-row' : ''}"><td>${fmtEpoch(x.created)}</td>` +
+        `<td>${champId && x.id === champId ? '⭐ ' : ''}${escapeHtml(x.target_column || '')}</td><td>${escapeHtml(x.best_model || '-')}</td><td>${x.best_cv_score != null ? x.best_cv_score.toFixed(4) : '-'}</td><td>${escapeHtml(x.status)}</td>` +
         `<td><button class="btn btn-outline btn-sm js-promote" data-id="${escapeHtml(x.id)}">Promote if Better</button></td></tr>`).join('') +
       '</tbody></table></div>';
     el.querySelectorAll('.js-promote').forEach(b => b.addEventListener('click', async (e) => {
@@ -1855,6 +2468,13 @@ const COMMANDS = [
     { label: 'Export loaded data (CSV)', run: () => { switchTab('data'); clickIt('btn-export-data'); } },
     { label: 'Export preprocessed data (CSV)', run: () => { switchTab('preprocess'); clickIt('btn-export-preprocessed'); } },
     { label: 'Detect anomalies', run: () => { switchTab('schema'); clickIt('btn-anomaly-detect'); } },
+    // ---- Tier D additions: reports, quick view, explain, monitor ----
+    { label: 'Quick View (summary + charts)', run: () => { switchTab('data'); return runQuickView(); } },
+    { label: 'Export analysis report (HTML)', tab: 'analyze', run: () => { switchTab('analyze'); return exportHtmlReport(); } },
+    { label: 'Export training report (Markdown)', tab: 'train', run: () => { switchTab('train'); clickIt('btn-export-train-md'); } },
+    { label: 'Explain first prediction row', tab: 'predict', run: () => { switchTab('predict'); clickIt('btn-explain-first'); } },
+    { label: 'Capture drift reference (loaded data)', tab: 'schema', run: () => { switchTab('schema'); clickIt('btn-monitor-capture'); } },
+    { label: 'Download all charts as PNG (scroll down)', run: () => { showToast('Click the ⤓ PNG button on any chart.', 'info'); } },
 ];
 
 function clickIt(id) {
@@ -1960,6 +2580,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 // ============ Initial load ============
 
+loadUIState(); // Tier D: restore the user's last tab & dashboard settings
 refreshState();
 refreshRecipes();
 refreshSnapshots();

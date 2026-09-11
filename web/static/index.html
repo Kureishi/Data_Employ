@@ -84,6 +84,14 @@
                     <div id="data-preview" class="table-container"></div>
                     <button id="btn-export-data" class="btn btn-outline btn-sm">Export Loaded Data (CSV)</button>
                 </div>
+                <div class="card">
+                    <h2>Quick View</h2>
+                    <div class="form-row">
+                        <button class="btn btn-primary btn-sm" id="btn-quick-view" title="Auto-run a summary + charts on the loaded data">⚡ Quick View</button>
+                        <span class="hint">One-click context: stat cards, correlation heatmap, column insights, and target analysis.</span>
+                    </div>
+                    <div id="quick-view-result" class="data-box"></div>
+                </div>
             </div>
 
             <!-- Preprocess Tab -->
@@ -131,6 +139,10 @@
                         </select>
                         <input type="text" id="analyze-target" list="target-options" placeholder="Target column (optional)" />
                         <button class="btn btn-primary" id="btn-analyze">Analyze</button>
+                    </div>
+                    <div class="form-row">
+                        <button class="btn btn-outline btn-sm" id="btn-export-report" title="Download a self-contained HTML report with charts + summary stats">📄 Export Report (HTML)</button>
+                        <span class="hint">A self-contained HTML report you can open, print, or share.</span>
                     </div>
                     <div id="analyze-result" class="data-box"></div>
                 </div>
@@ -185,6 +197,9 @@
                     </div>
                     <div id="train-progress" class="train-progress"></div>
                     <div id="train-result" class="data-box"></div>
+                    <div class="form-row">
+                        <button class="btn btn-outline btn-sm" id="btn-export-train-md" title="Download the latest training result as a Markdown report">⬇ Export Training Report (Markdown)</button>
+                    </div>
                 </div>
                 <div class="card">
                     <h2>Feature Health (Smarter Filtering)</h2>
@@ -251,7 +266,12 @@
                         <input type="text" id="whatif-value" placeholder='New value (JSON, e.g. 15 or "PhD")' />
                         <button class="btn btn-outline" id="btn-whatif">What-If</button>
                     </div>
+                    <div class="form-row">
+                        <button class="btn btn-outline btn-sm" id="btn-explain-first" title="Explain the first row of the last prediction batch">Explain first prediction row</button>
+                        <span class="hint">Tip: click the "Explain" button on any prediction row below to see its drivers.</span>
+                    </div>
                     <div id="explain-result" class="data-box"></div>
+                    <div id="predict-explain-result" class="data-box"></div>
                 </div>
                 <div class="card">
                     <h2>Batch What-If</h2>
