@@ -2337,3 +2337,7 @@ def _shutdown() -> None:
     except Exception:
         pass
     log.info("Shutdown complete.")
+
+
+if __name__ == "__main__":
+    main()
