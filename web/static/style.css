@@ -863,6 +863,112 @@ tr.ex-champ-row td{background:#fffbeb;}
 .contrib-zero{position:absolute;top:0;width:1px;height:100%;background:#d1d5db;}
 .contrib-val{width:60px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
 .contrib-hint{margin:2px 0 8px;font-size:11px;color:var(--text-light);display:flex;gap:18px;}
+/* ===== Tier 1: Professional UI polish ===== */
+
+/* Brand logo wordmark */
+.logo-mark{flex-shrink:0;display:block;}
+.logo-text{font-size:19px;font-weight:600;letter-spacing:-0.2px;color:var(--text);}
+.logo-text strong{color:var(--primary);font-weight:700;}
+
+/* Refined typography: headings use a clear hierarchy with consistent rhythm */
+.content h2{font-size:20px;font-weight:650;letter-spacing:-0.3px;color:var(--text);}
+.card h2{margin-bottom:18px;}
+.content .card{padding:22px 24px;border-radius:12px;}
+.card h4{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-light);margin:18px 0 10px;}
+.hint{color:var(--text-light);font-size:12px;}
+
+/* Elevated stat / KPI cards */
+.health-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
+.health-card{
+    position:relative;overflow:hidden;
+    background:linear-gradient(180deg,var(--card-bg),#fafbff);
+    border:1px solid var(--border);
+    border-radius:12px;padding:16px 14px;text-align:left;
+    box-shadow:0 1px 2px rgba(16,24,40,.04);
+    transition:transform .15s ease,box-shadow .15s ease;
+}
+.health-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--primary);opacity:.85;}
+.health-card:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(16,24,40,.08);}
+.health-card .cell-label{font-size:11px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;}
+.health-card .cell-value{font-size:24px;font-weight:700;letter-spacing:-0.4px;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.1;}
+
+/* Num-style metric cards (train results, etc.) */
+.metric-grid{gap:12px;}
+.metric-card{border-radius:12px;padding:14px;text-align:left;border:1px solid var(--border);box-shadow:0 1px 2px rgba(16,24,40,.04);}
+.metric-card .metric-value{font-size:22px;}
+
+/* Tables: cleaner, more readable data tables */
+table.dataframe{border-radius:8px;overflow:hidden;box-shadow:0 1px 2px rgba(16,24,40,.04);}
+table.dataframe th{
+    background:var(--sidebar-bg);color:var(--text);font-weight:600;text-align:left;
+    padding:9px 12px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.3px;
+}
+table.dataframe td{padding:8px 12px;font-variant-numeric:tabular-nums;}
+table.dataframe th,table.dataframe td{border-color:var(--border);}
+table.dataframe tr:nth-child(even){background:#fbfcfe;}
+table.dataframe tr:hover{background:var(--primary-light);}
+.table-container{border:1px solid var(--border);border-radius:8px;overflow:auto;}
+
+/* Data boxes: softer, less "monospace dump" */
+.data-box{border:1px solid var(--border);border-radius:10px;background:var(--card-bg);padding:14px 16px;max-height:520px;}
+.data-box table.dataframe,.data-box .table-container,.data-box .drift-row,
+.data-box .lb-row,.data-box .contrib-row,.data-box .health-summary{white-space:normal;font-family:inherit;letter-spacing:normal;text-transform:none;}
+
+/* Buttons: clearer hierarchy — primary vs. secondary vs. subtle */
+.btn{border-radius:8px;font-weight:600;box-shadow:0 1px 2px rgba(16,24,40,.05);}
+.btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px;}
+.btn-primary{background:linear-gradient(180deg,var(--primary),var(--primary-hover));box-shadow:0 1px 2px rgba(79,70,229,.35);}
+.btn-outline{background:var(--card-bg);border-color:var(--border);}
+.btn-outline:hover{border-color:var(--text-light);background:var(--bg);}
+
+/* Sidebar: calmer sections and cleaner items */
+.sidebar{padding:20px 16px;}
+.sidebar-section{background:rgba(255,255,255,.55);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;}
+.sidebar-section h3{font-size:12px;font-weight:700;letter-spacing:.6px;}
+.table-item{border-radius:8px;padding:8px 10px;transition:background .15s,border-color .15s;border:1px solid transparent;}
+.table-item:hover{background:var(--primary-light);border-color:var(--primary-light);}
+.table-item.active{background:var(--primary-light);border-color:var(--primary);}
+.table-item .table-name{font-weight:500;}
+.table-item .table-rows{font-size:11px;}
+
+/* Tabs: softer active state */
+.tabs{gap:2px;border-bottom:1px solid var(--border);margin-bottom:22px;}
+.tab{border-radius:8px 8px 0 0;}
+.tab.active{background:var(--primary-light);border-bottom-color:var(--primary);}
+
+/* Header: quieter, more refined */
+header{padding:13px 26px;box-shadow:0 1px 2px rgba(16,24,40,.06);}
+.status-badge{box-shadow:none;font-weight:500;}
+
+/* Focus visibility for keyboard users */
+a:focus-visible,select:focus-visible,button:focus-visible,
+.tab:focus-visible,.table-item:focus-visible{outline:2px solid var(--primary);outline-offset:2px;}
+
+/* ===== Tier 1 (item 6): Dark theme via system preference ===== */
+@media (prefers-color-scheme: dark){
+  :root{
+    --primary:#818cf8;--primary-hover:#6366f1;--primary-light:#1e1b4b;
+    --danger:#f87171;--danger-hover:#ef4444;--success:#34d399;--warning:#fbbf24;
+    --text:#e5e7eb;--text-light:#9ca3af;--border:#333a45;--bg:#0f1115;
+    --card-bg:#171a20;--sidebar-bg:#1c2027;--shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+  .health-card{background:linear-gradient(180deg,#1b1f26,#181b21);}
+  .health-card .cell-value{color:#f3f4f6;}
+  table.dataframe th{background:#22262e;color:#e5e7eb;}
+  table.dataframe tr:nth-child(even){background:#1a1e24;}
+  table.dataframe tr:hover{background:#252a34;}
+  .table-container,.data-box,.sidebar-section{border-color:#333a45;}
+  .metric-card{background:#171a20;}
+  .tab.active{background:var(--primary-light);color:#c7d2fe;}
+  .hm-label{color:#9ca3af;}
+  .dist-track{background:#333a45;}
+  input[type="text"],input[type="number"],select,textarea{background:#101318;color:var(--text);border-color:#333a45;}
+  .op-item{background:#171a20;border-color:#333a45;}
+}
+
+/* Contribution swatches (restored) */
 .sw.pos{background:#10b981;}
 .sw.neg{background:#ef4444;}
+
+/* ===== End Tier 1 ===== */
 
