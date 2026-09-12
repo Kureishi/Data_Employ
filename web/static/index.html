@@ -16,12 +16,13 @@
             </svg>
             <span class="logo-text"><strong>ML</strong> Agent</span>
         </div>
-        <div class="header-actions">
-            <div id="llm-status" class="status-badge">
+        <div class="header-actions" role="region" aria-label="Connection center">
+            <div id="llm-status" class="status-badge" title="LLM advisor status">
                 <span class="dot"></span>
                 <span class="label">LLM: Checking...</span>
             </div>
-            <div id="db-status" class="status-badge">
+            <span class="conn-divider" aria-hidden="true"></span>
+            <div id="db-status" class="status-badge" role="status" aria-live="polite" title="Database connection status">
                 <span class="dot"></span>
                 <span class="label">Not Connected</span>
             </div>
@@ -460,10 +461,10 @@
 
     <!-- Command palette (Ctrl+K) -->
     <div id="command-palette" class="command-palette hidden">
-        <div class="command-palette-box">
-            <input type="text" id="command-palette-input" placeholder="Type a command…  (e.g. 'train', 'export', 'suggest target')" autocomplete="off" />
-            <div id="command-palette-list" class="command-palette-list"></div>
-            <div class="command-palette-hint">↑↓ navigate · Enter run · Esc close</div>
+        <div class="command-palette-box" role="dialog" aria-modal="true" aria-label="Command palette">
+            <input type="text" id="command-palette-input" placeholder="Type a command…  (e.g. 'train', 'export', 'suggest target')" autocomplete="off" aria-label="Search commands" />
+            <div id="command-palette-list" class="command-palette-list" role="listbox" aria-label="Commands"></div>
+            <div class="command-palette-hint"><kbd>↑</kbd><kbd>↓</kbd> navigate · <kbd>↵</kbd> run · <kbd>esc</kbd> close</div>
         </div>
     </div>
 

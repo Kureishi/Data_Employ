@@ -82,6 +82,18 @@ function setStatus(id, text, state) {
     label.title = text;
     el.className = 'status-badge';
     if (state) el.classList.add(state);
+    updatePageTitle();
+}
+
+// Item 12: keep the browser-tab title reflective of connection state.
+function updatePageTitle() {
+    const conn = document.getElementById('db-status');
+    const dbText = conn && conn.querySelector ? (conn.querySelector('.label').textContent || '') : '';
+    const connected = /connected|ok/i.test(dbText) && !/not/i.test(dbText);
+    const tb = document.getElementById('data-table-select');
+    const src = (tb && tb.value) ? tb.value : '';
+    const suffix = connected ? (src ? ` · ${src}` : ' · Connected') : ' · Not connected';
+    try { document.title = 'ML Agent' + suffix; } catch (e) { /* ignore */ }
 }
 
 // ============ Loading state helpers ============
@@ -742,12 +754,14 @@ function svgBarChart(items, opts) {
     const color = opts.color || '#4f46e5';
 
     let bars = '';
+    // Consistent chart language (Item 13): muted top reference gridline + baseline.
+    bars += `<line x1="${labelW}" y1="${padding.top}" x2="${width - valueW}" y2="${padding.top}" stroke="#e5e7eb" stroke-width="1" stroke-dasharray="3 3"></line>`;
+    bars += `<line x1="${labelW}" y1="${padding.top}" x2="${labelW}" y2="${height - padding.bottom}" stroke="#d1d5db" stroke-width="1"></line>`;
     items.forEach((it, idx) => {
         const w = (Math.abs(it.value) / maxVal) * plotW;
         const y = padding.top + idx * (barH + gap);
         const isNeg = it.value < 0;
         const x = labelW + (isNeg ? plotW - w : 0);
-        const label = String(it.label);
         const disp = (it.label || '').length > 18 ? it.label.slice(0, 16) + '…' : it.label;
         bars += `<text x="${labelW - 6}" y="${y + barH - 4}" text-anchor="end" font-size="11" fill="#6b7280">${escapeHtml(disp)}</text>`;
         bars += `<rect x="${x}" y="${y}" width="${Math.max(w, it.value === 0 ? 0 : 2)}" height="${barH}" fill="${color}" rx="2"></rect>`;
@@ -755,9 +769,10 @@ function svgBarChart(items, opts) {
     });
 
     const fname = opts.filename || 'chart.png';
+    const aria = escapeHtml(opts.title || 'Bar chart');
     return `<div class="chart"><div class="chart-head"><div class="chart-title">${escapeHtml(opts.title || '')}</div>` +
-        `<button type="button" class="btn btn-outline btn-sm chart-png-btn" title="Download this chart as PNG">⤓ PNG</button></div>` +
-        `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" data-filename="${escapeHtml(fname)}">${bars}</svg></div>`;
+        `<button type="button" class="btn btn-outline btn-sm chart-png-btn" title="Download this chart as PNG" aria-label="Download ${aria} as PNG">⤓ PNG</button></div>` +
+        `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${aria}" data-filename="${escapeHtml(fname)}">${bars}</svg></div>`;
 }
 
 function renderConfusionMatrix(cm, classLabels) {
@@ -2516,25 +2531,37 @@ let paletteItems = [];
 
 function renderPalette(filter) {
     const q = (filter || '').toLowerCase().trim();
-    paletteItems = COMMANDS.filter(c =>
-        !q || c.label.toLowerCase().includes(q) ||
-        ((c.tab || '').toLowerCase().includes(q))
-    );
+    const match = c => !q || c.label.toLowerCase().includes(q) || ((c.tab || '').toLowerCase().includes(q));
+    const filtered = COMMANDS.filter(match);
+    paletteItems = filtered;
     const list = document.getElementById('command-palette-list');
-    if (!paletteItems.length) {
-        list.innerHTML = '<div class="command-palette-empty">No matches.</div>';
+    if (!filtered.length) {
+        list.innerHTML = '<div class="command-palette-empty">No commands match "<strong>' + escapeHtml(filter || '') + '</strong>".</div>';
         return;
     }
-    if (paletteActive > paletteItems.length - 1) paletteActive = paletteItems.length - 1;
-    list.innerHTML = paletteItems.map((c, i) =>
-        `<div class="command-item ${i === paletteActive ? 'active' : ''}" data-idx="${i}">` +
-        `<span class="command-label">${escapeHtml(c.label)}</span>` +
-        (c.tab ? `<span class="command-tab">${escapeHtml(c.tab)}</span>` : '') +
-        `</div>`).join('');
+    if (paletteActive > filtered.length - 1) paletteActive = filtered.length - 1;
 
+    // Group results by tab/category for a scannable modal when no filter (Item 11).
+    let html = '';
+    const byGroup = {};
+    for (const c of filtered) { const g = c.tab || 'Actions'; (byGroup[g] = byGroup[g] || []).push(c); }
+    let idx = 0;
+    for (const [group, items] of Object.entries(byGroup)) {
+        html += `<div class="command-group">${escapeHtml(group)}</div>`;
+        for (const c of items) {
+            html += `<div class="command-item ${idx === paletteActive ? 'active' : ''}" data-idx="${idx}" role="option" ${idx === paletteActive ? 'aria-selected="true"' : ''}>` +
+                `<span class="command-label">${escapeHtml(c.label)}</span>` +
+                (c.tab ? `<span class="command-tab">${escapeHtml(c.tab)}</span>` : '') + `</div>`;
+            idx++;
+        }
+    }
+    list.innerHTML = html;
     list.querySelectorAll('.command-item').forEach(el => {
+        el.addEventListener('mouseenter', () => { paletteActive = parseInt(el.dataset.idx, 10); renderPalette(document.getElementById('command-palette-input').value); });
         el.addEventListener('click', () => runPaletteCommand(parseInt(el.dataset.idx, 10)));
     });
+    const activeEl = list.querySelector('.command-item.active');
+    if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
 }
 
 async function runPaletteCommand(idx) {

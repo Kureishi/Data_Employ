@@ -988,3 +988,43 @@ table.dataframe td.num{font-variant-numeric:tabular-nums;}
 /* Table-row date formatting already uses toLocaleString via fmtEpoch.
    Toast stacking is capped in showToast (Item 9). */
 
+/* ===== Tier 3: product-grade touches ===== */
+
+/* Item 12 — connection center header */
+.conn-divider{width:1px;height:20px;background:var(--border);align-self:center;}
+
+/* Item 11 — command palette: grouped modal polish */
+.command-palette-list{padding:6px;}
+.command-group{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-light);padding:10px 12px 4px;}
+.command-palette-box{border-radius:14px;}
+.command-palette-box input{font-size:16px;}
+.command-item{position:relative;}
+.command-item.active{background:var(--primary-light);}
+.command-item.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:2px;background:var(--primary);}
+.command-tab{font-size:10px;}
+.command-palette-hint{padding:10px 16px;display:flex;gap:6px;align-items:center;font-size:11px;}
+.command-palette-hint kbd{font-family:inherit;font-size:10px;background:var(--sidebar-bg);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:1px 5px;color:var(--text);}
+
+/* Item 13 — chart visual language */
+.chart-title{font-size:13px;font-weight:700;color:var(--text);}
+.chart svg{height:auto;}
+.chart-head{align-items:center;}
+.chart-png-btn{font-size:10px;padding:3px 8px;}
+/* tooltips indicate interactivity */
+.hm-cell,.dist-track,.command-tab{cursor:help;}
+
+/* Item 14 — accessibility */
+#toast-container{position:fixed;top:16px;right:16px;z-index:1000;}
+.command-item:focus-visible{outline:2px solid var(--primary);outline-offset:-1px;}
+input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--primary);outline-offset:1px;}
+
+/* Dark theme adjustments for Tier 3 additions */
+@media (prefers-color-scheme: dark){
+  .command-group{color:#9ca3af;}
+  .command-palette-box input{color:var(--text);}
+  .chart-title{color:#f3f4f6;}
+  svg text[fill="#1f2937"]{fill:#e5e7eb;}
+  svg text[fill="#6b7280"]{fill:#9ca3af;}
+}
+
+/* ===== End Tier 3 ===== */
