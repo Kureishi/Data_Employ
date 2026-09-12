@@ -972,3 +972,19 @@ a:focus-visible,select:focus-visible,button:focus-visible,
 
 /* ===== End Tier 1 ===== */
 
+/* ===== Tier 2: usability polish ===== */
+
+/* Right-aligned numeric table cells (Item 8) */
+table.dataframe td.num,table.dataframe th.num{text-align:right;}
+table.dataframe td.num{font-variant-numeric:tabular-nums;}
+
+/* Loading skeleton + empty/error states (Item 7) */
+.skeleton-block{margin:8px 0;}
+.skeleton-line{display:block;width:100%;height:14px;border-radius:6px;background:linear-gradient(90deg,var(--sidebar-bg) 25%,var(--border) 37%,var(--sidebar-bg) 63%);background-size:400% 100%;animation:shimmer 1.2s ease infinite;}
+.empty-state{padding:18px;border:1px dashed var(--border);border-radius:10px;background:var(--card-bg);text-align:center;margin:8px 0;}
+.empty-state.error{border-color:var(--danger);background:#fef2f2;}
+@keyframes shimmer{0%{background-position:100% 0;}100%{background-position:0 0;}}
+
+/* Table-row date formatting already uses toLocaleString via fmtEpoch.
+   Toast stacking is capped in showToast (Item 9). */
+

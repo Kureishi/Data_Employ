@@ -63,6 +63,7 @@ async function api(url, method = 'GET', body = null) {
 
 function showToast(message, type = 'info') {
     const container = document.getElementById('toast-container');
+    while (container.children.length >= 5) container.firstChild.remove();
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.textContent = message;
@@ -103,12 +104,19 @@ function setLoading(btn, loading) {
     }
 }
 
-function formatJson(val) {
+function fmtNum(val) {
     if (val === null || val === undefined) return 'N/A';
     if (typeof val === 'number') {
-        if (Number.isInteger(val)) return val.toString();
+        if (Number.isInteger(val)) return val.toLocaleString('en-US');
+        if (Math.abs(val) >= 1000) return val.toLocaleString('en-US', { maximumFractionDigits: 2 });
         return val.toFixed(4);
     }
+    return String(val);
+}
+
+function formatJson(val) {
+    if (val === null || val === undefined) return 'N/A';
+    if (typeof val === 'number') return fmtNum(val);
     if (typeof val === 'object') return JSON.stringify(val);
     return String(val);
 }
@@ -129,12 +137,15 @@ function escapeHtml(str) {
 function renderTable(data, columns) {
     if (!data || data.length === 0) return '<p class="hint">No data to display.</p>';
     const cols = columns || Object.keys(data[0]);
+    // Detect numeric columns from the first row so values right-align (Item 8).
+    const first = data[0] || {};
+    const numeric = new Set(cols.filter(c => typeof first[c] === 'number'));
     let html = '<table class="dataframe"><thead><tr>';
-    html += cols.map(c => `<th>${escapeHtml(c)}</th>`).join('');
+    html += cols.map(c => `<th class="${numeric.has(c) ? 'num' : ''}">${escapeHtml(c)}</th>`).join('');
     html += '</tr></thead><tbody>';
     for (const row of data) {
         html += '<tr>';
-        html += cols.map(c => `<td>${escapeHtml(formatJson(row[c]))}</td>`).join('');
+        html += cols.map(c => `<td class="${numeric.has(c) ? 'num' : ''}">${escapeHtml(formatJson(row[c]))}</td>`).join('');
         html += '</tr>';
     }
     html += '</tbody></table>';
@@ -208,39 +219,56 @@ async function refreshState() {
     }
 }
 
+function skeletonBlock(text) {
+    return '<div class="empty-state"><span class="skeleton-line"></span><p class="hint">' + escapeHtml(text) + '</p></div>';
+}
+
 function renderTablesList(tables) {
     const list = document.getElementById('tables-list');
     if (!tables || tables.length === 0) {
-        list.innerHTML = '<p class="hint">No tables found.</p>';
+        list.innerHTML = '<p class="hint">No tables found. Connect to a database to list tables.</p>';
         return;
     }
     list.innerHTML = tables.map(t => `
-        <div class="table-item" data-table="${escapeHtml(t)}">
+        <div class="table-item" data-table="${escapeHtml(t)}" title="${escapeHtml(t)} — click to load" tabindex="0" role="button">
             <span class="table-name">${escapeHtml(t)}</span>
             <span class="table-spark"></span>
-            <span class="table-rows">click to load</span>
+            <span class="table-rows">load</span>
         </div>
     `).join('');
 
-    // Attach click handlers to table items
+    const activate = (el) => {
+        document.querySelectorAll('.table-item').forEach(x => x.classList.remove('active'));
+        el.classList.add('active');
+    };
+
+    const loadTable = async (el) => {
+        const table = el.dataset.table;
+        currentDataSource = table;
+        activate(el);
+        const preview = document.getElementById('data-preview');
+        if (preview) preview.innerHTML = skeletonBlock(`Loading ${table}…`);
+        try {
+            const res = await api('/api/load', 'POST', { table });
+            const info = document.getElementById('data-info');
+            info.className = 'info-box success';
+            info.innerHTML = `<strong>Loaded:</strong> ${escapeHtml(table)}<br><strong>Rows:</strong> ${fmtNum(res.rows)}<br><strong>Columns:</strong> ${escapeHtml(res.columns.join(', '))}`;
+            if (preview) preview.innerHTML = renderTable(res.data, res.columns);
+            showToast(`Loaded ${fmtNum(res.rows)} rows from ${table}`, 'success');
+            await refreshState();
+            await autoSuggestTarget();
+            saveUIState();
+            try { await runQuickView(); } catch (e) { /* best-effort */ }
+        } catch (e) {
+            if (preview) preview.innerHTML = '<div class="empty-state error"><p class="hint">Failed to load ' + escapeHtml(table) + '.</p></div>';
+            showToast(e.message, 'error');
+        }
+    };
+
     document.querySelectorAll('.table-item').forEach(el => {
-        el.addEventListener('click', async () => {
-            const table = el.dataset.table;
-            currentDataSource = table;
-            try {
-                const res = await api('/api/load', 'POST', { table });
-                const info = document.getElementById('data-info');
-                info.className = 'info-box success';
-                info.innerHTML = `<strong>Loaded:</strong> ${escapeHtml(table)}<br><strong>Rows:</strong> ${res.rows}<br><strong>Columns:</strong> ${res.columns.join(', ')}`;
-                document.getElementById('data-preview').innerHTML = renderTable(res.data, res.columns);
-                showToast(`Loaded ${res.rows} rows from ${table}`, 'success');
-                await refreshState();
-                await autoSuggestTarget();
-                saveUIState();
-                try { await runQuickView(); } catch (e) { /* best-effort */ }
-            } catch (e) {
-                showToast(e.message, 'error');
-            }
+        el.addEventListener('click', () => loadTable(el));
+        el.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); loadTable(el); }
         });
     });
     renderSidebarPreviews(tables);
@@ -268,7 +296,7 @@ function renderSidebarPreviews(tables) {
                     const x = idx * 1.4, y = 18 - ((Number(r[numeric]) - vmin) / span) * 14;
                     return `${x.toFixed(1)},${y.toFixed(1)}`;
                 }).join(' ');
-                el.innerHTML = `<svg width="${(rows.length - 1) * 1.4}" height="20" xmlns="http://www.w3.org/2000/svg" class="sparkline"><polyline points="${pts}" fill="none" stroke="#4f46e5" stroke-width="1.5"/></svg>`;
+                el.innerHTML = `<svg width="${(rows.length - 1) * 1.4}" height="20" xmlns="http://www.w3.org/2000/svg" class="sparkline" role="img" aria-label="Preview of ${escapeHtml(numeric)}"><title>${escapeHtml(t)} · ${escapeHtml(numeric)} ${fmtNum(vmin)}–${fmtNum(vmax)}</title><polyline points="${pts}" fill="none" stroke="#4f46e5" stroke-width="1.5"/></svg>`;
             } catch (e) { /* non-fatal */ }
         }, 250 + i * 150);
     });
