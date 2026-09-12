@@ -2557,11 +2557,25 @@ function renderPalette(filter) {
     }
     list.innerHTML = html;
     list.querySelectorAll('.command-item').forEach(el => {
-        el.addEventListener('mouseenter', () => { paletteActive = parseInt(el.dataset.idx, 10); renderPalette(document.getElementById('command-palette-input').value); });
+        // Hover only swaps the active highlight (no re-render) so the list
+        // can be scrolled smoothly and clicked without jumping/flickering.
+        el.addEventListener('mouseenter', () => setPaletteActive(parseInt(el.dataset.idx, 10)));
         el.addEventListener('click', () => runPaletteCommand(parseInt(el.dataset.idx, 10)));
     });
     const activeEl = list.querySelector('.command-item.active');
     if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+// Highlight an item without rebuilding the DOM (keeps scroll position stable).
+function setPaletteActive(idx) {
+    if (idx === paletteActive) return;
+    paletteActive = idx;
+    document.querySelectorAll('#command-palette-list .command-item').forEach(it => {
+        const active = parseInt(it.dataset.idx, 10) === idx;
+        it.classList.toggle('active', active);
+        if (active) it.setAttribute('aria-selected', 'true');
+        else it.removeAttribute('aria-selected');
+    });
 }
 
 async function runPaletteCommand(idx) {

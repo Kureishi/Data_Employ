@@ -137,12 +137,18 @@ main {
 
 .connect-form {
     display: flex;
+    align-items: center;
     gap: 6px;
     margin-bottom: 10px;
 }
 
 .connect-form input {
-    flex: 1;
+    flex: 1 1 0%;
+    min-width: 0;
+}
+
+.connect-form .btn {
+    flex-shrink: 0;
 }
 
 .upload-form {
@@ -207,7 +213,7 @@ main {
     color: var(--text-light);
 }
 
-.sidebar-section .btn {
+.sidebar-section > .btn {
     width: 100%;
     margin-bottom: 6px;
 }
@@ -921,10 +927,10 @@ table.dataframe tr:hover{background:var(--primary-light);}
 .btn-outline{background:var(--card-bg);border-color:var(--border);}
 .btn-outline:hover{border-color:var(--text-light);background:var(--bg);}
 
-/* Sidebar: calmer sections and cleaner items */
+/* Sidebar: calmer, high-contrast sections */
 .sidebar{padding:20px 16px;}
-.sidebar-section{background:rgba(255,255,255,.55);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;}
-.sidebar-section h3{font-size:12px;font-weight:700;letter-spacing:.6px;}
+.sidebar-section{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;box-shadow:var(--shadow);}
+.sidebar-section h3{font-size:12px;font-weight:800;letter-spacing:.6px;color:var(--text);}
 .table-item{border-radius:8px;padding:8px 10px;transition:background .15s,border-color .15s;border:1px solid transparent;}
 .table-item:hover{background:var(--primary-light);border-color:var(--primary-light);}
 .table-item.active{background:var(--primary-light);border-color:var(--primary);}
