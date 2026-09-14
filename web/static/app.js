@@ -1,4 +1,4 @@
-// ML Agent Web UI JavaScript
+// Data Employ Web UI JavaScript
 
 // ============ State ============
 let currentTab = 'data';
@@ -93,7 +93,7 @@ function updatePageTitle() {
     const tb = document.getElementById('data-table-select');
     const src = (tb && tb.value) ? tb.value : '';
     const suffix = connected ? (src ? ` · ${src}` : ' · Connected') : ' · Not connected';
-    try { document.title = 'ML Agent' + suffix; } catch (e) { /* ignore */ }
+    try { document.title = 'Data Employ' + suffix; } catch (e) { /* ignore */ }
 }
 
 // ============ Loading state helpers ============
@@ -698,7 +698,7 @@ async function exportHtmlReport() {
     const filename = 'ml-agent-analysis-report.html';
     const doc = '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
         '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-        '<title>ML Agent — Analysis Report</title>' +
+        '<title>Data Employ — Analysis Report</title>' +
         '<style>html{max-width:980px;margin:0 auto;padding:24px;}@media print{body{padding:0}}' + css + '</style>' +
         '</head><body class="report-body">' +
         `<h1>Data Analysis Report</h1>` +
@@ -764,7 +764,7 @@ function svgBarChart(items, opts) {
         const x = labelW + (isNeg ? plotW - w : 0);
         const disp = (it.label || '').length > 18 ? it.label.slice(0, 16) + '…' : it.label;
         bars += `<text x="${labelW - 6}" y="${y + barH - 4}" text-anchor="end" font-size="11" fill="#6b7280">${escapeHtml(disp)}</text>`;
-        bars += `<rect x="${x}" y="${y}" width="${Math.max(w, it.value === 0 ? 0 : 2)}" height="${barH}" fill="${color}" rx="2"></rect>`;
+        bars += `<rect class="bar" x="${x}" y="${y}" width="${Math.max(w, it.value === 0 ? 0 : 2)}" height="${barH}" fill="${color}" rx="2"><title>${escapeHtml(it.label)}: ${formatJson(it.value)}</title></rect>`;
         bars += `<text x="${x + Math.max(w, 2) + 4}" y="${y + barH - 4}" font-size="11" fill="#1f2937">${formatJson(it.value)}</text>`;
     });
 
@@ -936,7 +936,10 @@ function distBand(info) {
     const lo = Math.min(max, Math.max(min, mean - std));
     const hi = Math.max(min, Math.min(max, mean + std));
     const w = Math.max(0, p(hi) - p(lo));
-    return `<div class="dist-band"><div class="dist-track"><div class="dist-one" style="left:${p(lo)}%;width:${w}%"></div>` +
+    const tip = 'Range ' + formatJson(min) + ' → ' + formatJson(max) +
+        ' | mean ' + formatJson(mean) +
+        (std ? ' | σ ' + formatJson(std) : '');
+    return `<div class="dist-band"><div class="dist-track" title="${escapeHtml(tip)}"><div class="dist-one" style="left:${p(lo)}%;width:${w}%"></div>` +
         `<div class="dist-mean" style="left:${p(mean)}%"></div></div>` +
         `<div class="dist-ticks"><span>${formatJson(min)}</span><span>${formatJson(mean)}</span><span>${formatJson(max)}</span></div></div>`;
 }

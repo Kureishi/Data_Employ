@@ -151,6 +151,33 @@ main {
     flex-shrink: 0;
 }
 
+/* Advanced connect-by-URL toggle (collapsed by default to keep the panel clean) */
+.connect-advanced{margin-bottom:10px;}
+.connect-advanced summary{
+    cursor:pointer;
+    font-size:11px;
+    color:var(--text-light);
+    user-select:none;
+    display:flex;
+    align-items:center;
+    gap:5px;
+    padding:4px 6px;
+    border-radius:6px;
+}
+.connect-advanced summary::-webkit-details-marker{display:none;}
+.connect-advanced summary::before{
+    content:"▸";
+    display:inline-block;
+    width:10px;
+    text-align:center;
+    transition:transform .15s;
+    color:var(--text-light);
+}
+.connect-advanced[open] summary::before{transform:rotate(90deg);}
+.connect-advanced summary:hover{color:var(--text);background:var(--bg);}
+.connect-advanced .connect-form{margin-top:6px;}
+.connect-advanced input{min-width:0;}
+
 .upload-form {
     display: flex;
     flex-direction: column;
@@ -1017,7 +1044,7 @@ table.dataframe td.num{font-variant-numeric:tabular-nums;}
 .chart-head{align-items:center;}
 .chart-png-btn{font-size:10px;padding:3px 8px;}
 /* tooltips indicate interactivity */
-.hm-cell,.dist-track,.command-tab{cursor:help;}
+.hm-cell,.dist-track,.command-tab,.chart svg rect.bar{cursor:help;}
 
 /* Item 14 — accessibility */
 #toast-container{position:fixed;top:16px;right:16px;z-index:1000;}
