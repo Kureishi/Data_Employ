@@ -2521,6 +2521,7 @@ const COMMANDS = [
     { label: 'Explain first prediction row', tab: 'predict', run: () => { switchTab('predict'); clickIt('btn-explain-first'); } },
     { label: 'Capture drift reference (loaded data)', tab: 'schema', run: () => { switchTab('schema'); clickIt('btn-monitor-capture'); } },
     { label: 'Download all charts as PNG (scroll down)', run: () => { showToast('Click the ⤓ PNG button on any chart.', 'info'); } },
+    { label: 'Open How-to guide (step-by-step workflows)', run: () => { window.open('/static/howto.html', '_blank', 'noopener'); } },
 ];
 
 function clickIt(id) {

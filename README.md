@@ -131,6 +131,8 @@ Uses a **local** OpenAI-compatible LLM (LM Studio at `http://localhost:1234/v1`)
 ## Web Dashboard
 Tabs: **Data** (connect, browse, SQL, preview/export), **Preprocess**, **Analyze** (summary/correlations/insights/target/health + charts, snapshots & diff), **Train** (best model, tuning, live progress + cancel, feature-health), **Predict** (single/batch/table/CSV, explain, what-if), **Model Persistence**, **Schema** (ER diagram, auto-join, drift profiling, anomaly & drift monitoring, safety settings), **LLM Advisor**. Press **`⌘K`** for the command palette.
 
+> **Note:** The **Guide** button in the top-right header (and the `⌘K` → *Open How-to guide* command) opens `howto.html` — a self-contained step-by-step guide with example workflows (load, analyze, preprocess, train, predict, monitor, share) and a feature glossary.
+
 > **Note:** In the sidebar's **Database** section, connect by **Upload DB** (SQLite `.db/.sqlite/.sqlite3` file) or expand **Advanced: connect by URL** and click **Link** to enter a file path or SQLAlchemy URL (e.g. `sqlite:///path.db`, `postgresql://user:pass@host/db`). The **Link** label is short so it fits the narrow left panel without text clipping; its behavior is identical to a "Connect" button.
 
 ## REST API (abridged)

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Employ — How-to Guide</title>
+<style>
+:root{--primary:#4f46e5;--primary-light:#eef2ff;--primary-dark:#4338ca;--bg:#f3f4f6;--surface:#fff;--border:#e5e7eb;--text:#1f2937;--text-mut:#6b7280;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+@media (prefers-color-scheme: dark){:root{--primary:#818cf8;--primary-dark:#6366f1;--primary-light:#312e58;--bg:#111827;--surface:#18202e;--border:#2a3448;--text:#e5e7eb;--text-mut:#9ca3af}}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;font-size:15px}
+.wrap{max-width:860px;margin:0 auto;padding:40px 24px 88px}
+header{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.logo-mark{flex-shrink:0}
+.logo-text{font-size:20px;font-weight:700}
+.sub{color:var(--text-mut);margin:0 0 28px;font-size:14px}
+h1{font-size:30px;margin:4px 0 6px}
+h2{font-size:21px;margin:44px 0 6px;padding-bottom:6px;border-bottom:2px solid var(--border)}
+h3{font-size:16px;margin:22px 0 6px;color:var(--primary-dark)}
+p{margin:8px 0}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:16px 0}
+.step{display:flex;gap:14px;margin:12px 0}
+.step-num{flex-shrink:0;width:26px;height:26px;border-radius:50%;background:var(--primary);color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;margin-top:2px}
+.step b{color:var(--text)}
+.f{display:inline-block;background:var(--primary-light);color:var(--primary-dark);border-radius:5px;padding:0 6px;font-size:13px;font-weight:600}
+.kbd{font-family:inherit;font-size:12px;background:var(--bg);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:1px 6px}
+code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin:12px 0}
+th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--bg);font-weight:700}
+tr:nth-child(even) td{background:rgba(127,127,127,.05)}
+.tip{background:var(--primary-light);border-left:3px solid var(--primary);border-radius:6px;padding:10px 14px;margin:14px 0;font-size:14px}
+.callout{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600}
+.good{background:rgba(22,163,74,.15);color:var(--ok)}
+.warn{background:rgba(217,119,6,.15);color:var(--warn)}
+.bad{background:rgba(220,38,38,.15);color:var(--bad)}
+.toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.toc a{color:var(--text);text-decoration:none;background:var(--surface);border:1px solid var(--border);padding:12px 14px;border-radius:8px;font-size:14px}
+.toc a:hover{border-color:var(--primary);color:var(--primary-dark)}
+.toplink{float:right;font-size:12px;color:var(--text-mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="logo-mark" width="34" height="34" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect x="3" y="3" width="26" height="26" rx="7" fill="#4f46e5"/>
+      <path d="M10 21V11 M16 21V11 M22 21V11" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+      <circle cx="16" cy="8" r="1.6" fill="#a5b4fc"/>
+    </svg>
+    <span class="logo-text">Data Employ</span>
+  </header>
+  <p class="sub">A step-by-step guide to the dashboard and a short glossary of every feature.</p>
+  <div class="toc">
+    <a href="#wf1">1 · Load &amp; instant context</a>
+    <a href="#wf2">2 · Explore &amp; analyze</a>
+    <a href="#wf3">3 · Clean &amp; preprocess</a>
+    <a href="#wf4">4 · Train a model</a>
+    <a href="#wf5">5 · Predict &amp; explain</a>
+    <a href="#wf6">6 · Monitor in production</a>
+    <a href="#wf7">7 · Save, share &amp; automate</a>
+    <a href="#shortcuts">Shortcuts</a>
+    <a href="#glossary">Feature glossary</a>
+  </div>
+<h2 id="wf1">Workflow 1 · Get your data and see instant context
+    <a href="#wf1" class="toplink">#</a>
+  </h2>
+  <p>Everything starts on the <b>Data</b> tab. Data Employ works with SQLite files, and any SQL database over a URL.</p>
+  <div class="card">
+    <div class="step"><span class="step-num">1</span><span><b>Add a database.</b> On the left panel, click <b>Upload DB</b> and pick a <code>.db</code>/<code>.sqlite</code> file, or expand <span class="f">Advanced: connect by URL</span> and paste a connection string (e.g. <code>postgresql://user:pass@host/db</code>), then <b>Link</b>.</span></div>
+    <div class="step"><span class="step-num">2</span><span><b>Browse your tables</b> — they appear in the left panel with a small <span class="f">sparkline</span> preview of their first numeric column. Click one.</span></div>
+    <div class="step"><span class="step-num">3</span><span><b>Quick View</b> launches automatically: a row of <span class="f">stat cards</span> (rows, columns, missing, duplicates), a <span class="f">correlation heatmap</span>, per-column <span class="f">insights</span>, and <span class="f">target analysis</span> — all without any further clicks.</span></div>
+    <p class="tip">Change the <b>Target column</b> on the Analyze tab, then click <b>⚡ Quick View</b> to re-render all charts against the new target.</p>
+  </div>
+
+  <h2 id="wf2">Workflow 2 · Explore &amp; analyze your data
+    <a href="#wf2" class="toplink">#</a>
+  </h2>
+  <p>Open the <b>Analyze</b> tab and pick a type, then click <b>Analyze</b>.</p>
+  <div class="card">
+    <ul>
+      <li><span class="f">Summary</span> — stat cards, heatmap, insights and target analysis in one view (same as Quick View).</li>
+      <li><span class="f">Correlations</span> — a color-coded matrix. Use it to spot <b>multicollinearity</b> before you train.</li>
+      <li><span class="f">Column Insights</span> — a <b>distribution band</b> per column (min → max with the mean) and bars of the top values.</li>
+      <li><span class="f">Target Analysis</span> — how each feature relates to your target, with correlation bars.</li>
+      <li><span class="f">Data Health</span> — a report flagging missing values, duplicates, and near-constant columns.</li>
+      <li><span class="f">Export Report (HTML)</span> — download a self-contained, printable HTML report of the current analysis.</li>
+      <li><span class="f">Snapshots &amp; Diff</span> — save a result under a name, then diff two snapshots to see what changed between runs.</li>
+    </ul>
+  </div>
+<h2 id="wf3">Workflow 3 · Clean &amp; preprocess
+    <a href="#wf3" class="toplink">#</a>
+  </h2>
+  <p>On the <b>Preprocess</b> tab you build a pipeline of operations, then apply them all at once.</p>
+  <div class="card">
+    <div class="step"><span class="step-num">1</span><span>Pick an operation (e.g. <code>Fill Missing Values</code>), set its params (<code>method=median</code>), and <b>Add Operation</b>. Add as many as you like.</span></div>
+    <div class="step"><span class="step-num">2</span><span>Click <b>Apply Operations</b> to run the whole queue in order. Watch the result row/column counts.</span></div>
+    <div class="step"><span class="step-num">3</span><span>Optional: click <span class="f">LLM Suggest</span> to have the advisor propose a cleanup plan automatically.</span></div>
+    <p class="tip">Operations stay in the queue until you <b>Clear</b>, so you can experiment freely before applying. <b>Export Preprocessed Data (CSV)</b> saves the cleaned result.</p>
+  </div>
+
+  <h2 id="wf4">Workflow 4 · Train a model
+    <a href="#wf4" class="toplink">#</a>
+  </h2>
+  <p>On the <b>Train</b> tab. If you haven't set a target yet, <b>Auto-Train</b> picks one, prepares the data, and runs in the background.</p>
+  <div class="card">
+    <div class="step"><span class="step-num">1</span><span>Set the <b>target column</b> and a task/tuning mode, or hit <span class="f">Auto-Train</span> to let it decide.</span></div>
+    <div class="step"><span class="step-num">2</span><span><b>Watch the run</b> — a progress bar and live log appear; jobs run in the background so the UI stays responsive.</span></div>
+    <div class="step"><span class="step-num">3</span><span><b>Read the results</b> — a model comparison bar chart, feature-importance bars, and (for classification) a confusion-matrix heatmap.</span></div>
+    <div class="step"><span class="step-num">4</span><span>Optional: <span class="f">Check Features</span> (feature health) to drop near-constant, high-cardinality, or highly-correlated columns first.</span></div>
+    <div class="step"><span class="step-num">5</span><span><b>Save Model</b> (or Download) so you can reload it later.</span></div>
+    <p class="tip">The best model becomes the <b>champion</b> automatically. Experiment history is tracked — view it as a leaderboard bar chart on the Train tab.</p>
+  </div>
+<h2 id="wf5">Workflow 5 · Predict &amp; explain
+    <a href="#wf5" class="toplink">#</a>
+  </h2>
+  <p>Once a model is trained, use the <b>Predict</b> tab.</p>
+  <div class="card">
+    <div class="step"><span class="step-num">1</span><span><b>Single</b> — paste one JSON record and <b>Predict</b>.</span></div>
+    <div class="step"><span class="step-num">2</span><span><b>Batch</b> — pick a table and <b>Predict Table</b>, <b>Predict Loaded Data</b>, or upload a CSV. Every row gets a score.</span></div>
+    <div class="step"><span class="step-num">3</span><span><b>Explain</b> — click <b>Explain</b> on any row (or use <b>Explain first prediction row</b>). You get <b>contribution bars</b>: green pushes the prediction up, red pulls it down — so you see <i>why</i>.</span></div>
+    <div class="step"><span class="step-num">4</span><span><b>What-If</b> — change one feature on a single row (e.g. <code>years_experience → 15</code>) to see the new prediction. <b>Batch What-If</b> does the same across all rows.</span></div>
+    <div class="step"><span class="step-num">5</span><span><b>Export Predictions (CSV)</b> to save the scored table.</span></div>
+  </div>
+
+  <h2 id="wf6">Workflow 6 · Monitor a model in production
+    <a href="#wf6" class="toplink">#</a>
+  </h2>
+  <p>On the <b>Schema</b> tab under Model Monitoring / Anomaly Detection.</p>
+  <div class="card">
+    <div class="step"><span class="step-num">1</span><span><b>Capture Reference</b> on the data you trained on — this is the baseline distribution.</span></div>
+    <div class="step"><span class="step-num">2</span><span>Later, pick a <b>live table</b> and <b>Check Drift</b>. Features are shown as <b>PSI bars</b> colored <span class="callout good">stable</span>, <span class="callout warn">moderate</span>, or <span class="callout bad">drifted</span>.</span></div>
+    <div class="step"><span class="step-num">3</span><span><b>Re-Score Table</b> scores every row and flags drift plus anomalies automatically.</span></div>
+    <div class="step"><span class="step-num">4</span><span>For anomalies, use <b>Detect</b> then the interactive <b>scatter</b> — pick any two numeric features to visually spot outliers (red points).</span></div>
+  </div>
+<h2 id="wf7">Workflow 7 · Save, share &amp; automate
+    <a href="#wf7" class="toplink">#</a>
+  </h2>
+  <div class="card">
+    <ul>
+      <li><span class="f">Export Report (HTML)</span> / <span class="f">Export Training Report (Markdown)</span> — shareable artifacts you can print or send.</li>
+      <li><span class="f">PNG charts</span> — click the <b>⤓ PNG</b> button on any chart to save it as an image for slides/docs.</li>
+      <li><span class="f">Reusable Pipeline Recipes</span> — capture data source + preprocessing + training config so you can reproduce a full run later on updated data (Schema tab).</li>
+      <li><span class="f">Snapshots &amp; Diff</span> — version your results and compare (Analyze tab).</li>
+      <li><span class="f">Command palette</span> (<span class="kbd">Ctrl</span>/<span class="kbd">⌘</span>+<span class="kbd">K</span>) — jump to or trigger any action by typing; scroll &amp; click to pick.</li>
+      <li><span class="f">Persistent state</span> — your active tab, table, target and connection are remembered across reloads.</li>
+      <li><span class="f">LLM Advisor</span> — natural-language help for analysis, preprocessing suggestions, and SQL (connect a local LLM in the top-left status).</li>
+    </ul>
+  </div>
+
+  <h2 id="shortcuts">Shortcuts &amp; tips
+    <a href="#shortcuts" class="toplink">#</a>
+  </h2>
+  <div class="card">
+    <ul>
+      <li><span class="kbd">Ctrl</span>/<span class="kbd">⌘</span>+<span class="kbd">K</span> — open the command palette.</li>
+      <li>Loading a table auto-runs <b>Quick View</b>; click it again to refresh against a new target.</li>
+      <li>Hover any chart for a tooltip; charts can be exported as PNG.</li>
+      <li>Long-running trainings run in the background — you can keep using the app.</li>
+    </ul>
+  </div>
+<h2 id="glossary">Feature glossary
+    <a href="#glossary" class="toplink">#</a>
+  </h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Feature</th><th>Tab</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td>Upload DB / connect by URL</td><td>Sidebar</td><td>Open a SQLite file or any SQL database.</td></tr>
+        <tr><td>Quick View</td><td>Data</td><td>Auto-render stats, heatmap, insights, target analysis.</td></tr>
+        <tr><td>Custom SQL / Validate</td><td>Data</td><td>Run arbitrary (read-only) queries on your data.</td></tr>
+        <tr><td>Preprocess queue</td><td>Preprocess</td><td>Chain ops (fill, drop, scale, encode, sample) and apply together.</td></tr>
+        <tr><td>Analyze (Summary / Correlations / Insights / Target / Health)</td><td>Analyze</td><td>Charts and stats for understanding the data.</td></tr>
+        <tr><td>Snapshots &amp; Diff</td><td>Analyze</td><td>Save and compare versions of results.</td></tr>
+        <tr><td>Auto-Train / Train</td><td>Train</td><td>Fit the best model; show comparison + importance + confusion matrix.</td></tr>
+        <tr><td>Check Features</td><td>Train</td><td>Flag near-constant, high-cardinality, correlated columns.</td></tr>
+        <tr><td>Save / Load / Upload Model</td><td>Train</td><td>Persist and restore a trained model.</td></tr>
+        <tr><td>Predict / Predict Table / Batch / CSV</td><td>Predict</td><td>Score a record, a table, or a file.</td></tr>
+        <tr><td>Explain / What-If / Batch What-If</td><td>Predict</td><td>Understand a prediction and test changes.</td></tr>
+        <tr><td>Re-Score Table / Drift / Anomaly</td><td>Schema</td><td>Monitor a model against new data.</td></tr>
+        <tr><td>Recipes</td><td>Schema</td><td>Reproduce a full pipeline later.</td></tr>
+        <tr><td>Command palette (⌘K)</td><td>Global</td><td>Search and run any action quickly.</td></tr>
+        <tr><td>LLM Advisor</td><td>LLM</td><td>Natural-language analysis and suggestions.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="text-align:center;color:var(--text-mut);font-size:13px;margin-top:36px">Data Employ · How-to Guide</p>
+</div>
+</body>
+</html>
