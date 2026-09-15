@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 
+# Build artifacts (pip install . / python -m build)
+dist/
+build/
+.eggs/
+
 # Trained models / fingerprints generated at runtime
 ml_agent_models/
 *.joblib

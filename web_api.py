@@ -35,10 +35,23 @@ log = logging.getLogger("ml_agent.web_api")
 
 # ============ App setup ============
 
+def _resolve_static_folder() -> str:
+    """Locate the dashboard static assets.
+
+    The dashboard ships as package data inside ``ml_agent/static`` (see
+    ``pyproject.toml`` ``[tool.setuptools.package-data]``). That path is valid
+    both from a repository checkout (``pip install -e .`` / running in the
+    repo) and from an installed wheel (``pip install .``), because it is
+    resolved relative to the ``ml_agent`` package itself.
+    """
+    import ml_agent as _ml_agent
+
+    return os.path.join(os.path.dirname(os.path.abspath(_ml_agent.__file__)), "static")
+
+
 app = Flask(
     __name__,
-    static_folder="web/static",
-    template_folder="web/templates",
+    static_folder=_resolve_static_folder(),
 )
 
 # Cap request body size so a single client can't exhaust memory (scalability + DoS).

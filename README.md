@@ -11,12 +11,24 @@ Automates end-to-end ML on SQL databases: discovers tables & relationships, auto
 - **Production**: waitress/gunicorn serving, health/status endpoints, auth + rate limiting, durable job store, Redis-backed rate limiting & sessions, hard-killable jobs, session isolation.
 
 ## Install
+
+**Recommended (packaged install):**
+```bash
+pip install .                # installs deps + `data-employ` / `data-employ-web` commands
+```
+
+**Development / source install:**
 ```bash
 python -m venv .venv
 .venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 python create_sample_db.py        # optional: generate a sample DB
 ```
+
+Installing the project also installs two console commands:
+- `data-employ` — CLI (same as `python main.py`)
+- `data-employ-web` — web dashboard / WEB API (same as `python web_api.py`)
+
 
 ## Quick Start (CLI)
 ```bash
@@ -175,9 +187,10 @@ ml_agent/            orchestrator (agent.py), config.py, logging_utils.py, datab
                      llm_advisor.py, job_store.py, ratelimit.py, session_store.py,
                      ops.py, workexec.py, cli.py, snapshots.py, recipes.py, relational.py,
                      anomaly.py, model_monitor.py, experiments.py, sql_validation.py
-web/static/          index.html, style.css, app.js (dashboard)
+ml_agent/static/    index.html, style.css, app.js, favicon.svg, howto.html (dashboard)
 web_api.py           Flask web API (waitress in production)
 wsgi.py / gunicorn.conf.py   production WSGI entry + config
 main.py / demo.py / create_sample_db.py   CLI entry, demo, sample-DB generator
-requirements.txt     dependencies
+requirements.txt     dev dependencies (pip install -r requirements.txt)
+pyproject.toml         packaging / build metadata (pip install . )
 ```
