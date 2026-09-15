@@ -24,7 +24,7 @@ from .session_store import SessionStore
 from .ops import handlers as op_handlers
 from . import workexec  # subprocess entrypoints for background jobs
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 __all__ = [
     "MLAgent", "DatabaseProcessor", "ModelSelector", "Predictor", "DataAnalyzer",
     "DataPreprocessor", "LLMAdvisor", "LLMAdvisorError", "create_llm_advisor",

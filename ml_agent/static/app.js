@@ -2537,28 +2537,30 @@ function renderPalette(filter) {
     const q = (filter || '').toLowerCase().trim();
     const match = c => !q || c.label.toLowerCase().includes(q) || ((c.tab || '').toLowerCase().includes(q));
     const filtered = COMMANDS.filter(match);
-    paletteItems = filtered;
+    // The flat list used for BOTH rendering and execution must be in the same
+    // (grouped) order, so that arrow/Enter/click indices always address the
+    // command the user actually highlighted.
+    paletteItems = orderedCommands(filtered);
     const list = document.getElementById('command-palette-list');
-    if (!filtered.length) {
+    if (!paletteItems.length) {
         list.innerHTML = '<div class="command-palette-empty">No commands match "<strong>' + escapeHtml(filter || '') + '</strong>".</div>';
         return;
     }
-    if (paletteActive > filtered.length - 1) paletteActive = filtered.length - 1;
+    if (paletteActive > paletteItems.length - 1) paletteActive = paletteItems.length - 1;
 
-    // Group results by tab/category for a scannable modal when no filter (Item 11).
+    // Render in grouped order with per-group headers (Item 11).
     let html = '';
-    const byGroup = {};
-    for (const c of filtered) { const g = c.tab || 'Actions'; (byGroup[g] = byGroup[g] || []).push(c); }
-    let idx = 0;
-    for (const [group, items] of Object.entries(byGroup)) {
-        html += `<div class="command-group">${escapeHtml(group)}</div>`;
-        for (const c of items) {
-            html += `<div class="command-item ${idx === paletteActive ? 'active' : ''}" data-idx="${idx}" role="option" ${idx === paletteActive ? 'aria-selected="true"' : ''}>` +
-                `<span class="command-label">${escapeHtml(c.label)}</span>` +
-                (c.tab ? `<span class="command-tab">${escapeHtml(c.tab)}</span>` : '') + `</div>`;
-            idx++;
+    let lastGroup = null;
+    paletteItems.forEach((c, idx) => {
+        const g = c.tab || 'Actions';
+        if (g !== lastGroup) {
+            html += `<div class="command-group">${escapeHtml(g)}</div>`;
+            lastGroup = g;
         }
-    }
+        html += `<div class="command-item ${idx === paletteActive ? 'active' : ''}" data-idx="${idx}" role="option" ${idx === paletteActive ? 'aria-selected="true"' : ''}>` +
+            `<span class="command-label">${escapeHtml(c.label)}</span>` +
+            (c.tab ? `<span class="command-tab">${escapeHtml(c.tab)}</span>` : '') + `</div>`;
+    });
     list.innerHTML = html;
     list.querySelectorAll('.command-item').forEach(el => {
         // Hover only swaps the active highlight (no re-render) so the list
@@ -2568,6 +2570,17 @@ function renderPalette(filter) {
     });
     const activeEl = list.querySelector('.command-item.active');
     if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+// Build the display-ordered command list (grouped by tab/category). Both the
+// palette renderer and runPaletteCommand index into this same list, keeping
+// highlight/Enter/click indices consistent.
+function orderedCommands(list) {
+    const byGroup = {};
+    for (const c of list) { const g = c.tab || 'Actions'; (byGroup[g] = byGroup[g] || []).push(c); }
+    const ordered = [];
+    for (const items of Object.values(byGroup)) ordered.push(...items);
+    return ordered;
 }
 
 // Highlight an item without rebuilding the DOM (keeps scroll position stable).
